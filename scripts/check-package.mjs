@@ -21,6 +21,12 @@ assert.equal(plugin.admin.settingsSchema.privateReadKey.type, "secret");
 assert(plugin.capabilities.includes("hooks.page-fragments:register"));
 assert.equal(typeof plugin.hooks["page:fragments"].handler, "function");
 assert.equal(typeof plugin.routes["validate-connection"].handler, "function");
+assert.equal(plugin.routes["validate-connection"].permission, "plugins:manage");
+assert.equal(typeof plugin.routes.admin.handler, "function");
+assert.equal(plugin.routes.admin.permission, "plugins:manage");
+assert.deepEqual(plugin.routes.admin.methods, ["POST"]);
+assert(plugin.admin.pages.some((page) => page.path === "/analytics"));
+assert.equal(plugin.admin.entry, undefined);
 
 // Prefix checks and examples are expected; a concrete private credential is not.
 for (const file of await readdir(resolve(root, "dist"))) {

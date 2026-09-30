@@ -44,6 +44,7 @@
 		"prepublishOnly": "npm run check"
 	},
 	"devDependencies": {
+		"@emdash-cms/blocks": "1.0.1",
 		"@types/node": "24.10.1",
 		"emdash": "1.0.1",
 		"oxfmt": "0.59.0",
