@@ -10,17 +10,15 @@ import {
 	type SiteSnapshot,
 	validateConnection,
 } from "../connection";
-import { containsPrivateKey, getOverview, getTimeseries } from "../openanalytics/client";
+import { getOverview, getPages, getSources, getTimeseries } from "../openanalytics/client";
 import { OpenAnalyticsError } from "../openanalytics/errors";
-import type {
-	AnalyticsReadQuery,
-	AnalyticsOverviewResponse,
-	AnalyticsTimeseriesResponse,
-} from "../openanalytics/types";
+import type { AnalyticsReadQuery } from "../openanalytics/types";
 import { DEFAULT_API_URL, type OpenAnalyticsConfig } from "../settings/config";
+import { connectionBlocks, controls, displayApiUrl } from "./connection";
+import { renderOverview } from "./overview";
+import { queryFor, rangeLabel, RANGES, selectedRange, type DateRange } from "./ranges";
+import { renderPages, renderSources } from "./reports";
 
-const RANGES = ["24h", "7d", "30d", "90d"] as const;
-type DateRange = (typeof RANGES)[number];
 type Input =
 	| { type: "page_load"; page: string }
 	| { type: "block_action"; action_id: string; value?: unknown; page?: string };
@@ -40,56 +38,6 @@ function parseInput(value: unknown): Input | null {
 	)
 		return value as Input;
 	return null;
-}
-
-function range(value: unknown): DateRange {
-	if (typeof value === "string" && RANGES.includes(value as DateRange)) return value as DateRange;
-	if (record(value) && typeof value.range === "string" && RANGES.includes(value.range as DateRange))
-		return value.range as DateRange;
-	return "30d";
-}
-
-function displayApiUrl(value: unknown): string {
-	if (typeof value !== "string" || !value.trim()) return "Not configured";
-	if (containsPrivateKey(value)) return "Invalid API URL";
-	try {
-		const parsed = new URL(value.trim());
-		if (
-			parsed.username ||
-			parsed.password ||
-			parsed.search ||
-			parsed.hash ||
-			!["http:", "https:"].includes(parsed.protocol)
-		)
-			return "Invalid API URL";
-		return parsed.toString().replace(/\/$/, "");
-	} catch {
-		return "Invalid API URL";
-	}
-}
-
-function queryFor(selected: DateRange, tz: string, now = Date.now()): AnalyticsReadQuery {
-	const ms: Record<DateRange, number> = {
-		"24h": 24 * 60 * 60 * 1000,
-		"7d": 7 * 24 * 60 * 60 * 1000,
-		"30d": 30 * 24 * 60 * 60 * 1000,
-		"90d": 90 * 24 * 60 * 60 * 1000,
-	};
-	return {
-		from: new Date(now - ms[selected]).toISOString(),
-		to: new Date(now).toISOString(),
-		timezone: tz,
-		resolution: selected === "24h" ? "hour" : "day",
-	};
-}
-
-function label(selected: DateRange): string {
-	return {
-		"24h": "Last 24 hours",
-		"7d": "Last 7 days",
-		"30d": "Last 30 days",
-		"90d": "Last 90 days",
-	}[selected];
 }
 
 function safeError(kind: unknown, retryAfterSeconds?: number): string {
@@ -127,122 +75,6 @@ function errorCopy(error: unknown): string {
 		: "OpenAnalytics is temporarily unavailable. Try again shortly.";
 }
 
-function dateText(value: string | null, tz: string): string | null {
-	if (!value || !Number.isFinite(Date.parse(value))) return null;
-	return new Intl.DateTimeFormat(undefined, {
-		year: "numeric",
-		month: "short",
-		day: "numeric",
-		hour: "numeric",
-		minute: "2-digit",
-		timeZoneName: "short",
-		timeZone: tz,
-	}).format(new Date(value));
-}
-
-function rangeText(value: { from: string; to: string }, tz: string): string {
-	const from = dateText(value.from, tz);
-	const to = dateText(value.to, tz);
-	return from && to ? `${from} – ${to}` : "unavailable";
-}
-
-function connectionBlocks(args: {
-	apiUrl: string;
-	site?: {
-		name: string;
-		status: string;
-		install: { hasTrackingKey: boolean; trackerReady: boolean };
-	};
-	trackingEnabled: boolean;
-	validatedAt?: string;
-	needsValidation?: boolean;
-	notConfigured?: boolean;
-	error?: string;
-}): Block[] {
-	let title = args.notConfigured
-		? "Not configured"
-		: args.needsValidation
-			? "Needs validation"
-			: "Connected";
-	let description = args.notConfigured
-		? "Add an OpenAnalytics private read key in plugin settings to connect this site."
-		: args.needsValidation
-			? "Validate your private read key to connect this EmDash site."
-			: "Last validation confirmed this connection.";
-	let variant: "default" | "alert" | "error" =
-		args.notConfigured || args.needsValidation ? "alert" : "default";
-	if (args.error) {
-		title = "Connection needs attention";
-		description = args.error;
-		variant = "error";
-	} else if (args.site && args.site.status !== "active") {
-		title = `Connected · site ${args.site.status}`;
-		description = "OpenAnalytics reports that this site is not active.";
-		variant = "alert";
-	}
-	const install = args.site?.install;
-	const tracking = !install?.hasTrackingKey
-		? "No tracking key"
-		: !install.trackerReady
-			? "Tracking installation incomplete"
-			: !args.trackingEnabled
-				? "Tracking disabled"
-				: args.site?.status === "active"
-					? "Tracking active"
-					: "Tracking inactive";
-	return [
-		{ type: "banner", title, description, variant },
-		{
-			type: "fields",
-			fields: [
-				{ label: "Site", value: args.site?.name ?? "—" },
-				{ label: "Tracking", value: args.site ? tracking : "Not validated" },
-				{ label: "API", value: args.apiUrl },
-				{
-					label: "Last validated",
-					value: args.site
-						? (dateText(args.validatedAt ?? null, "UTC") ?? "Not recorded")
-						: "Never",
-				},
-			],
-		},
-	];
-}
-
-function controls(
-	selected: DateRange,
-	options: { validate?: boolean; retry?: boolean } = {},
-): Block {
-	const elements: Extract<Block, { type: "actions" }>["elements"] = [
-		{
-			type: "select",
-			action_id: "range",
-			label: "Date range",
-			initial_value: selected,
-			options: RANGES.map((value) => ({ label: label(value), value })),
-		},
-	];
-	if (options.retry)
-		elements.push({
-			type: "button",
-			action_id: "retry",
-			label: "Retry analytics",
-			style: "primary",
-			value: { range: selected },
-		});
-	elements.push({
-		type: "button",
-		action_id: "revalidate",
-		label: options.validate ? "Validate connection" : "Revalidate connection",
-		style: "secondary",
-		value: { range: selected },
-	});
-	return {
-		type: "actions",
-		elements,
-	};
-}
-
 function waitingPage(
 	selected: DateRange,
 	apiUrl: string,
@@ -269,72 +101,48 @@ function waitingPage(
 	};
 }
 
-function getMetaWarning(
-	response: AnalyticsOverviewResponse,
-	timeseries: AnalyticsTimeseriesResponse,
-): string | null {
-	const metas = [response.meta, timeseries.meta];
-	const unavailable = metas.some((meta) => meta.freshness === null);
-	const delayed = metas.some(
-		(meta) =>
-			meta.freshness?.state === "stale" ||
-			meta.freshness?.state === "degraded" ||
-			meta.partial ||
-			meta.truncated,
-	);
-	const imported = metas.some((meta) => meta.data_sources.includes("imported"));
-	const estimated = metas.some((meta) => meta.accuracy !== "exact");
-	if (metas.some((meta) => meta.freshness?.state === "no_data"))
-		return "No analytics data is available for part or all of this range.";
-	if (delayed && imported)
-		return "Some imported data may be delayed or incomplete while OpenAnalytics finishes processing.";
-	if (delayed)
-		return "Results may be delayed or incomplete while OpenAnalytics finishes processing events.";
-	if (imported && estimated)
-		return "This range includes imported analytics. Some values are estimated or follow the import provider's definitions.";
-	if (imported) return "This range includes imported analytics data.";
-	if (estimated) return "OpenAnalytics marks some values as estimated or provider-defined.";
-	if (unavailable) return "Freshness information is unavailable for part of this response.";
-	return null;
+function timezoneFromSetting(value: unknown): { timezone: string; error: string | null } {
+	const raw = typeof value === "string" ? value.trim() : "";
+	if (!raw) return { timezone: "UTC", error: null };
+	try {
+		new Intl.DateTimeFormat("en", { timeZone: raw }).format(0);
+		return { timezone: raw, error: null };
+	} catch {
+		return {
+			timezone: "UTC",
+			error:
+				"Analytics timezone is invalid. Set an IANA timezone such as America/New_York in plugin settings.",
+		};
+	}
 }
 
 async function loadAnalytics(
 	config: OpenAnalyticsConfig,
 	snapshot: SiteSnapshot,
 	selected: DateRange,
-	tz: string,
+	timezone: string,
 	trackingEnabled: boolean,
 ): Promise<BlockResponse> {
 	const site = safeConnectionSummary(snapshot.site);
-	const query = queryFor(selected, tz);
-	const overviewQuery: AnalyticsReadQuery = { ...query, resolution: "hour", compare: true };
-	let overview: AnalyticsOverviewResponse;
-	let timeseries: AnalyticsTimeseriesResponse;
-	try {
-		[overview, timeseries] = await Promise.all([
-			getOverview(config, overviewQuery),
-			getTimeseries(config, query),
-		]);
-	} catch (error) {
-		return {
-			blocks: [
-				{ type: "header", text: "OpenAnalytics" },
-				...connectionBlocks({
-					apiUrl: config.apiUrl,
-					site,
-					trackingEnabled,
-					validatedAt: snapshot.validatedAt,
-				}),
-				controls(selected, { retry: true }),
-				{
-					type: "banner",
-					title: "Analytics unavailable",
-					description: errorCopy(error),
-					variant: "error",
-				},
-			],
-		};
-	}
+	const bounds = queryFor(selected, timezone);
+	const overviewQuery: AnalyticsReadQuery = { ...bounds, resolution: "hour", compare: true };
+	const chartQuery: AnalyticsReadQuery = {
+		...bounds,
+		resolution: selected === "24h" ? "hour" : "day",
+	};
+	const reportQuery = { from: bounds.from, to: bounds.to, timezone, limit: 10 };
+	const results = await Promise.allSettled([
+		getOverview(config, overviewQuery),
+		getTimeseries(config, chartQuery),
+		getPages(config, reportQuery),
+		getSources(config, reportQuery),
+	]);
+	const [overviewResult, chartResult, pagesResult, sourcesResult] = results;
+	const overview = overviewResult.status === "fulfilled" ? overviewResult.value : undefined;
+	const timeseries = chartResult.status === "fulfilled" ? chartResult.value : undefined;
+	const pages = pagesResult.status === "fulfilled" ? pagesResult.value : undefined;
+	const sources = sourcesResult.status === "fulfilled" ? sourcesResult.value : undefined;
+	const failures = results.some((result) => result.status === "rejected");
 	const blocks: Block[] = [
 		{ type: "header", text: "OpenAnalytics" },
 		...connectionBlocks({
@@ -343,79 +151,26 @@ async function loadAnalytics(
 			trackingEnabled,
 			validatedAt: snapshot.validatedAt,
 		}),
-		controls(selected),
-		{ type: "header", text: label(selected) },
-		{
-			type: "context",
-			text: `Buckets use ${tz}; chart timestamps are displayed in the browser timezone.`,
-		},
-		{
-			type: "stats",
-			items: (["visitors", "pageviews", "events"] as const).map((metric) => ({
-				label: { visitors: "Visitors", pageviews: "Pageviews", events: "Events" }[metric],
-				value: overview.totals[metric],
-				...(overview.comparison
-					? { description: `Previous period: ${overview.comparison.totals[metric]}` }
-					: {}),
-			})),
-		},
-		{
-			type: "chart",
-			config: {
-				chart_type: "timeseries",
-				style: "line",
-				x_axis_name: "Time",
-				y_axis_name: "Count",
-				series: [
-					{
-						name: "Visitors",
-						data: timeseries.series.map(
-							(p) => [Date.parse(p.bucket), p.visitors] as [number, number],
-						),
-					},
-					{
-						name: "Pageviews",
-						data: timeseries.series.map(
-							(p) => [Date.parse(p.bucket), p.pageviews] as [number, number],
-						),
-					},
-				],
-			},
-		},
+		controls(selected, { retry: failures }),
+		{ type: "header", text: rangeLabel(selected) },
+		...renderOverview({
+			timezone,
+			overview,
+			timeseries,
+			overviewError:
+				overviewResult.status === "rejected" ? errorCopy(overviewResult.reason) : undefined,
+			timeseriesError:
+				chartResult.status === "rejected" ? errorCopy(chartResult.reason) : undefined,
+		}),
+		...renderPages(
+			pages,
+			pagesResult.status === "rejected" ? errorCopy(pagesResult.reason) : undefined,
+		),
+		...renderSources(
+			sources,
+			sourcesResult.status === "rejected" ? errorCopy(sourcesResult.reason) : undefined,
+		),
 	];
-	const freshness = overview.meta.freshness;
-	const watermark = freshness ? dateText(freshness.watermark, tz) : null;
-	blocks.push({
-		type: "context",
-		text: watermark
-			? `Latest rolled-up data: ${watermark}.`
-			: "Latest rolled-up data timestamp is unavailable.",
-	});
-	blocks.push({
-		type: "context",
-		text: `Totals cover ${rangeText(overview.meta.effective_range, tz)}. Chart covers ${rangeText(timeseries.meta.effective_range, tz)}.`,
-	});
-	if (overview.comparison && overview.meta.comparison_range) {
-		blocks.push({
-			type: "context",
-			text: `Previous period: ${rangeText(overview.meta.comparison_range, tz)}.`,
-		});
-	}
-	if (overview.meta.freshness && timeseries.meta.freshness) {
-		const states = {
-			ok: "current",
-			no_data: "no data",
-			stale: "delayed",
-			degraded: "status unavailable",
-		};
-		blocks.push({
-			type: "context",
-			text: `Data status: totals ${states[overview.meta.freshness.state]}; chart ${states[timeseries.meta.freshness.state]}.`,
-		});
-	}
-	const warning = getMetaWarning(overview, timeseries);
-	if (warning)
-		blocks.push({ type: "banner", title: "Data status", description: warning, variant: "alert" });
 	return { blocks };
 }
 
@@ -436,7 +191,7 @@ export async function renderAdminPage(ctx: RouteContext): Promise<BlockResponse>
 		interaction.type === "block_action" &&
 		interaction.action_id === "range" &&
 		(typeof interaction.value !== "string" || !RANGES.includes(interaction.value as DateRange))
-	) {
+	)
 		return {
 			blocks: [
 				{ type: "header", text: "OpenAnalytics" },
@@ -448,8 +203,7 @@ export async function renderAdminPage(ctx: RouteContext): Promise<BlockResponse>
 				},
 			],
 		};
-	}
-	const selected = interaction.type === "block_action" ? range(interaction.value) : "30d";
+	const selected = interaction.type === "block_action" ? selectedRange(interaction.value) : "30d";
 	const [apiUrlValue, key, trackingValue, timezoneValue] = await Promise.all([
 		ctx.settings.get<unknown>("apiUrl"),
 		ctx.settings.get<unknown>("privateReadKey"),
@@ -473,18 +227,7 @@ export async function renderAdminPage(ctx: RouteContext): Promise<BlockResponse>
 			!configured,
 		);
 	}
-	const rawTimezone = typeof timezoneValue === "string" ? timezoneValue.trim() : "";
-	let tz = "UTC";
-	let timezoneError: string | null = null;
-	if (rawTimezone) {
-		try {
-			new Intl.DateTimeFormat("en", { timeZone: rawTimezone }).format(0);
-			tz = rawTimezone;
-		} catch {
-			timezoneError =
-				"Analytics timezone is invalid. Set an IANA timezone such as America/New_York in plugin settings.";
-		}
-	}
+	const { timezone, error: timezoneError } = timezoneFromSetting(timezoneValue);
 	let validationError: string | null = null;
 	if (interaction.type === "block_action" && interaction.action_id === "revalidate") {
 		const validation = await validateConnection(ctx);
@@ -499,13 +242,12 @@ export async function renderAdminPage(ctx: RouteContext): Promise<BlockResponse>
 	const snapshot = await ctx.kv.get<unknown>(SITE_SNAPSHOT_KEY);
 	if (validationError) {
 		if (isSiteSnapshot(snapshot) && snapshot.fingerprint === fingerprint) {
-			const site = safeConnectionSummary(snapshot.site);
 			return {
 				blocks: [
 					{ type: "header", text: "OpenAnalytics" },
 					...connectionBlocks({
 						apiUrl: config.apiUrl,
-						site,
+						site: safeConnectionSummary(snapshot.site),
 						trackingEnabled,
 						validatedAt: snapshot.validatedAt,
 					}),
@@ -522,36 +264,36 @@ export async function renderAdminPage(ctx: RouteContext): Promise<BlockResponse>
 		return waitingPage(selected, config.apiUrl, trackingEnabled, validationError, false);
 	}
 	if (timezoneError) {
-		const blocks: Block[] = [
-			{ type: "header", text: "OpenAnalytics" },
-			...(isSiteSnapshot(snapshot) && snapshot.fingerprint === fingerprint
-				? connectionBlocks({
-						apiUrl: config.apiUrl,
-						site: safeConnectionSummary(snapshot.site),
-						trackingEnabled,
-						validatedAt: snapshot.validatedAt,
-					})
-				: connectionBlocks({ apiUrl: config.apiUrl, trackingEnabled, needsValidation: true })),
-			controls(selected),
-			{
-				type: "banner",
-				title: "Check analytics settings",
-				description: timezoneError,
-				variant: "error",
-			},
-		];
-		return { blocks };
+		return {
+			blocks: [
+				{ type: "header", text: "OpenAnalytics" },
+				...(isSiteSnapshot(snapshot) && snapshot.fingerprint === fingerprint
+					? connectionBlocks({
+							apiUrl: config.apiUrl,
+							site: safeConnectionSummary(snapshot.site),
+							trackingEnabled,
+							validatedAt: snapshot.validatedAt,
+						})
+					: connectionBlocks({ apiUrl: config.apiUrl, trackingEnabled, needsValidation: true })),
+				controls(selected),
+				{
+					type: "banner",
+					title: "Check analytics settings",
+					description: timezoneError,
+					variant: "error",
+				},
+			],
+		};
 	}
 	if (!isSiteSnapshot(snapshot) || snapshot.fingerprint !== fingerprint) {
-		const stale = isSiteSnapshot(snapshot);
 		return waitingPage(
 			selected,
 			config.apiUrl,
 			trackingEnabled,
-			stale
+			isSiteSnapshot(snapshot)
 				? "Configuration changed. Revalidate the connection to resume tracking and load analytics."
 				: "Validate the connection to load analytics.",
 		);
 	}
-	return loadAnalytics(config, snapshot, selected, tz, trackingEnabled);
+	return loadAnalytics(config, snapshot, selected, timezone, trackingEnabled);
 }

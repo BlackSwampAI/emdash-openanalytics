@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 
 const root = resolve(import.meta.dirname, "..");
 const pkg = JSON.parse(await readFile(resolve(root, "package.json"), "utf8"));
@@ -33,4 +36,23 @@ for (const file of await readdir(resolve(root, "dist"))) {
 	const contents = await readFile(resolve(root, "dist", file), "utf8");
 	assert(!/oa_sk_[A-Za-z0-9_-]{8,}/.test(contents), `Private credential in ${file}`);
 }
-console.log("Package exports, native metadata, and artifact credential scan passed.");
+const cache = mkdtempSync(join(tmpdir(), "openanalytics-package-check-"));
+let packed;
+try {
+	[packed] = JSON.parse(
+		execFileSync("npm", ["pack", "--ignore-scripts", "--dry-run", "--json", "--cache", cache], {
+			cwd: root,
+			encoding: "utf8",
+			stdio: ["ignore", "pipe", "pipe"],
+		}),
+	);
+} finally {
+	rmSync(cache, { recursive: true, force: true });
+}
+for (const { path } of packed.files) {
+	assert(!/^(demo|scripts|tests)\//.test(path), `Development fixture packed: ${path}`);
+	assert(!path.startsWith("docs/screenshots/"), `Screenshot packed: ${path}`);
+	const contents = await readFile(resolve(root, path), "utf8");
+	assert(!/oa_sk_[A-Za-z0-9_-]{8,}/.test(contents), `Private credential packed: ${path}`);
+}
+console.log("Package exports, native metadata, packed files, and artifact credential scan passed.");

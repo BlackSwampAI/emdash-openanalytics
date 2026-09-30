@@ -28,6 +28,12 @@ export interface AnalyticsReadQuery extends AnalyticsDateRange {
 	readonly compare?: boolean;
 }
 
+/** The query shared by the top-N reports; their API has no resolution option. */
+export interface AnalyticsReportQuery extends AnalyticsDateRange {
+	readonly timezone: string;
+	readonly limit?: number;
+}
+
 export interface AnalyticsFreshness {
 	readonly state: AnalyticsFreshnessState;
 	readonly watermark: string | null;
@@ -73,4 +79,33 @@ export interface AnalyticsTimeseriesResponse {
 	readonly meta: AnalyticsMeta;
 	readonly series: readonly TimeseriesPoint[];
 	readonly comparison: { readonly series: readonly TimeseriesPoint[] } | null;
+}
+
+export interface AnalyticsPageRow {
+	readonly page_path: string;
+	readonly views: number;
+	readonly visitors: number;
+	readonly entrances: number | null;
+	readonly exits: number | null;
+	readonly bounces: number | null;
+	readonly bounce_rate: number | null;
+}
+
+export interface AnalyticsSourceRow {
+	readonly referrer_domain: string;
+	readonly utm_source: string;
+	readonly utm_medium: string;
+	readonly utm_campaign: string;
+	readonly views: number;
+	readonly visitors: number;
+}
+
+export interface AnalyticsPagesResponse {
+	readonly meta: AnalyticsMeta;
+	readonly items: readonly AnalyticsPageRow[];
+}
+
+export interface AnalyticsSourcesResponse {
+	readonly meta: AnalyticsMeta;
+	readonly items: readonly AnalyticsSourceRow[];
 }

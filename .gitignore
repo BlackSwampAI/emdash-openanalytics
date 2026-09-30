@@ -1,6 +1,8 @@
 node_modules/
 dist/
 coverage/
+.astro/
+demo/emdash-env.d.ts
 .turbo/
 .DS_Store
 *.tgz

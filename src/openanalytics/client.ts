@@ -6,6 +6,11 @@ import type {
 	AnalyticsMeta,
 	AnalyticsOverviewResponse,
 	AnalyticsReadQuery,
+	AnalyticsReportQuery,
+	AnalyticsPageRow,
+	AnalyticsPagesResponse,
+	AnalyticsSourceRow,
+	AnalyticsSourcesResponse,
 	AnalyticsTimeseriesResponse,
 	OverviewTotals,
 	SiteReadContext,
@@ -194,13 +199,29 @@ function isAnalyticsReadQuery(value: AnalyticsReadQuery): boolean {
 	return true;
 }
 
+function isAnalyticsReportQuery(value: AnalyticsReportQuery): boolean {
+	return (
+		isUtcInstant(value.from) &&
+		isUtcInstant(value.to) &&
+		Date.parse(value.from) < Date.parse(value.to) &&
+		isTimezone(value.timezone) &&
+		(value.limit === undefined ||
+			(Number.isInteger(value.limit) && value.limit >= 1 && value.limit <= 500))
+	);
+}
+
+type AnalyticsRequestQuery = AnalyticsReadQuery | AnalyticsReportQuery;
+
 async function getJSON(
 	config: OpenAnalyticsConfig,
 	path: string,
-	query?: AnalyticsReadQuery,
+	query?: AnalyticsRequestQuery,
 ): Promise<unknown> {
 	const validated = parseConfiguration(config);
-	if (query && !isAnalyticsReadQuery(query)) {
+	if (
+		query &&
+		!("resolution" in query ? isAnalyticsReadQuery(query) : isAnalyticsReportQuery(query))
+	) {
 		throw new OpenAnalyticsError("configuration", "OpenAnalytics analytics query is invalid.");
 	}
 	const controller = new AbortController();
@@ -211,8 +232,13 @@ async function getJSON(
 			url.searchParams.set("from", query.from);
 			url.searchParams.set("to", query.to);
 			url.searchParams.set("timezone", query.timezone);
-			url.searchParams.set("resolution", query.resolution);
-			if (query.compare !== undefined) url.searchParams.set("compare", String(query.compare));
+			if ("resolution" in query) {
+				url.searchParams.set("resolution", query.resolution);
+				if (query.compare !== undefined) url.searchParams.set("compare", String(query.compare));
+			} else {
+				url.searchParams.set("limit", String(query.limit ?? 10));
+				if (path.endsWith("/pages")) url.searchParams.set("sort", "views");
+			}
 		}
 		const response = await fetch(url.toString(), {
 			method: "GET",
@@ -353,6 +379,102 @@ export async function getTimeseries(
 				: Object.freeze({
 						series: projectPoints((comparison as { series: TimeseriesPoint[] }).series),
 					}),
+	});
+	if (containsPrivateKey(result)) throw new OpenAnalyticsError("invalid_response");
+	return result;
+}
+
+function isPageRow(value: unknown): value is AnalyticsPageRow {
+	return (
+		isRecord(value) &&
+		typeof value.page_path === "string" &&
+		isCount(value.views) &&
+		isCount(value.visitors) &&
+		(value.entrances === null || isCount(value.entrances)) &&
+		(value.exits === null || isCount(value.exits)) &&
+		(value.bounces === null || isCount(value.bounces)) &&
+		(value.bounce_rate === null ||
+			(typeof value.bounce_rate === "number" &&
+				Number.isFinite(value.bounce_rate) &&
+				value.bounce_rate >= 0 &&
+				value.bounce_rate <= 1))
+	);
+}
+
+function isSourceRow(value: unknown): value is AnalyticsSourceRow {
+	return (
+		isRecord(value) &&
+		typeof value.referrer_domain === "string" &&
+		typeof value.utm_source === "string" &&
+		typeof value.utm_medium === "string" &&
+		typeof value.utm_campaign === "string" &&
+		isCount(value.views) &&
+		isCount(value.visitors)
+	);
+}
+
+function isReportResponse<T extends AnalyticsPageRow | AnalyticsSourceRow>(
+	value: unknown,
+	isRow: (row: unknown) => row is T,
+): value is { meta: AnalyticsMeta; items: T[] } {
+	return (
+		isRecord(value) &&
+		isMeta(value.meta) &&
+		isFreshness(value.meta.freshness) &&
+		value.meta.comparison_range === null &&
+		Array.isArray(value.items) &&
+		value.items.every(isRow)
+	);
+}
+
+/** Read top pages, ranked by views, with session measures when available. */
+export async function getPages(
+	config: OpenAnalyticsConfig,
+	query: AnalyticsReportQuery,
+): Promise<AnalyticsPagesResponse> {
+	const payload = await getJSON(config, "/v1/read/analytics/pages", query);
+	if (!isReportResponse(payload, isPageRow)) throw new OpenAnalyticsError("invalid_response");
+	const result: AnalyticsPagesResponse = Object.freeze({
+		meta: projectMeta(payload.meta),
+		items: Object.freeze(
+			payload.items.map((row) =>
+				Object.freeze({
+					page_path: row.page_path,
+					views: row.views,
+					visitors: row.visitors,
+					entrances: row.entrances,
+					exits: row.exits,
+					bounces: row.bounces,
+					bounce_rate: row.bounce_rate,
+				}),
+			),
+		),
+	});
+	if (containsPrivateKey(result)) throw new OpenAnalyticsError("invalid_response");
+	return result;
+}
+
+/** Read acquisition rows by referrer domain and UTM tuple, ranked by views. */
+export async function getSources(
+	config: OpenAnalyticsConfig,
+	query: AnalyticsReportQuery,
+): Promise<AnalyticsSourcesResponse> {
+	const payload = await getJSON(config, "/v1/read/analytics/sources", query);
+	if (!isReportResponse(payload, isSourceRow)) throw new OpenAnalyticsError("invalid_response");
+	const result: AnalyticsSourcesResponse = Object.freeze({
+		meta: projectMeta(payload.meta),
+		items: Object.freeze(
+			payload.items.map((row) =>
+				Object.freeze({
+					referrer_domain: row.referrer_domain,
+					utm_source: row.utm_source,
+					utm_medium: row.utm_medium,
+					utm_campaign: row.utm_campaign,
+					views: row.views,
+					visitors: row.visitors,
+				}),
+			),
+		),
 	});
 	if (containsPrivateKey(result)) throw new OpenAnalyticsError("invalid_response");
 	return result;
