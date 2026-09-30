@@ -1,0 +1,111 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing version tag to publish (dispatch from this same tag)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: npm-release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 10.32.1
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+      - name: Verify release identity
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from "node:assert/strict";
+          import { execFileSync } from "node:child_process";
+          import { readFileSync } from "node:fs";
+          const pkg = JSON.parse(readFileSync("package.json", "utf8"));
+          const tag = process.env.RELEASE_TAG;
+          assert.equal(pkg.name, "@blackswampai/emdash-plugin-openanalytics");
+          assert.match(tag, /^v\d+\.\d+\.\d+$/);
+          assert.equal(tag, `v${pkg.version}`);
+          assert.equal(process.env.GITHUB_REF, `refs/tags/${tag}`);
+          const head = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+          assert.equal(head, process.env.GITHUB_SHA);
+          execFileSync("git", ["merge-base", "--is-ancestor", head, "origin/main"]);
+          console.log(`Verified ${pkg.name}@${pkg.version} at ${head}`);
+          NODE
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm screenshot
+      - name: Pack verified release
+        id: pack
+        run: |
+          npm pack --ignore-scripts --json --pack-destination "$RUNNER_TEMP" > "$RUNNER_TEMP/pack-info.json"
+          node --input-type=module <<'NODE'
+          import { appendFileSync, readFileSync } from "node:fs";
+          import { join } from "node:path";
+          const [packed] = JSON.parse(readFileSync(join(process.env.RUNNER_TEMP, "pack-info.json"), "utf8"));
+          appendFileSync(process.env.GITHUB_OUTPUT, `tarball=${join(process.env.RUNNER_TEMP, packed.filename)}\n`);
+          console.log(`Packed ${packed.entryCount} files, ${packed.size} bytes; ${packed.integrity}`);
+          NODE
+      - uses: actions/upload-artifact@v7
+        with:
+          name: npm-release-${{ env.RELEASE_TAG }}
+          path: |
+            ${{ steps.pack.outputs.tarball }}
+            ${{ runner.temp }}/pack-info.json
+          if-no-files-found: error
+      - name: Publish to npm with provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          RELEASE_TARBALL: ${{ steps.pack.outputs.tarball }}
+        run: |
+          test -n "$NODE_AUTH_TOKEN" || { echo "NPM_TOKEN repository secret is required for the first release."; exit 1; }
+          npm publish "$RELEASE_TARBALL" --access public --provenance --ignore-scripts
+      - name: Verify registry integrity
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from "node:assert/strict";
+          import { readFileSync } from "node:fs";
+          import { join } from "node:path";
+          const [packed] = JSON.parse(readFileSync(join(process.env.RUNNER_TEMP, "pack-info.json"), "utf8"));
+          const url = `https://registry.npmjs.org/${encodeURIComponent(packed.name)}/${packed.version}`;
+          for (let attempt = 0; attempt < 12; attempt++) {
+            const response = await fetch(url);
+            if (response.ok) {
+              const metadata = await response.json();
+              assert.equal(metadata.dist.integrity, packed.integrity);
+              assert.equal(metadata.name, packed.name);
+              assert.equal(metadata.version, packed.version);
+              assert(metadata.dist.attestations?.url, "Published provenance attestation is missing");
+              console.log(`Verified published ${packed.name}@${packed.version} and provenance`);
+              break;
+            }
+            if (attempt === 11) throw new Error(`Published package is not visible: HTTP ${response.status}`);
+            await new Promise((resolve) => setTimeout(resolve, 5000));
+          }
+          NODE
