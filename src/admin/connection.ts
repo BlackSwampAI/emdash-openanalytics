@@ -34,6 +34,7 @@ export function connectionBlocks(args: {
 	needsValidation?: boolean;
 	notConfigured?: boolean;
 	error?: string;
+	connectionAction?: { id: "revalidate" | "retry"; label: string; value?: unknown };
 }): Block[] {
 	let title = args.notConfigured
 		? "Not configured"
@@ -48,7 +49,7 @@ export function connectionBlocks(args: {
 	let variant: "default" | "alert" | "error" =
 		args.notConfigured || args.needsValidation ? "alert" : "default";
 	if (args.error) {
-		title = "Connection needs attention";
+		title = args.site ? "Connection needs attention" : "Connection failed";
 		description = args.error;
 		variant = "error";
 	} else if (args.site && args.site.status !== "active") {
@@ -57,6 +58,15 @@ export function connectionBlocks(args: {
 		variant = "alert";
 	}
 	const install = args.site?.install;
+	let insecureRemoteHttp = false;
+	try {
+		const parsed = new URL(args.apiUrl);
+		const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+		const loopback = host === "localhost" || host === "::1" || /^127(?:\.\d{1,3}){3}$/.test(host);
+		insecureRemoteHttp = parsed.protocol === "http:" && !loopback;
+	} catch {
+		/* Invalid URLs are already represented safely in the API field. */
+	}
 	const tracking = !install?.hasTrackingKey
 		? "No tracking key"
 		: !install.trackerReady
@@ -84,13 +94,36 @@ export function connectionBlocks(args: {
 				},
 			],
 		},
+		...(args.connectionAction
+			? [
+					{
+						type: "actions" as const,
+						elements: [
+							{
+								type: "button" as const,
+								action_id: args.connectionAction.id,
+								label: args.connectionAction.label,
+								style: "secondary" as const,
+								...(args.connectionAction.value === undefined
+									? {}
+									: { value: args.connectionAction.value }),
+							},
+						],
+					},
+				]
+			: []),
+		...(insecureRemoteHttp
+			? [
+					{
+						type: "context" as const,
+						text: "HTTP sends your private read key without encryption. Use HTTPS for production.",
+					},
+				]
+			: []),
 	];
 }
 
-export function controls(
-	selected: DateRange,
-	options: { validate?: boolean; retry?: boolean } = {},
-): Block {
+export function controls(selected: DateRange, options: { retry?: boolean } = {}): Block {
 	const labels: Record<DateRange, string> = {
 		"24h": "Last 24 hours",
 		"7d": "Last 7 days",
@@ -117,12 +150,5 @@ export function controls(
 			style: "primary",
 			value: { range: selected },
 		});
-	elements.push({
-		type: "button",
-		action_id: "revalidate",
-		label: options.validate ? "Validate connection" : "Revalidate connection",
-		style: "secondary",
-		value: { range: selected },
-	});
 	return { type: "actions", elements };
 }

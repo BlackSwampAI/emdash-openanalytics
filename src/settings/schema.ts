@@ -7,7 +7,8 @@ export const settingsSchema = {
 	apiUrl: {
 		type: "url",
 		label: "OpenAnalytics API URL",
-		description: "API origin for your OpenAnalytics account.",
+		description:
+			"API URL for your OpenAnalytics account. HTTPS is recommended; HTTP sends your private read key without encryption. Use HTTPS for production.",
 		default: DEFAULT_API_URL,
 	},
 	privateReadKey: {

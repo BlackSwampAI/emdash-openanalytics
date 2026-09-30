@@ -12,6 +12,7 @@ excluded. These are size comparisons, not runtime performance measurements.
 | EmDash scaffold, PR #1          |            495 |      721 |                  9 |                            1 |
 | EmDash native overview, PR #2   |           1458 |     1923 |                 10 |                            3 |
 | EmDash pages and sources, PR #3 |           1770 |     2423 |                 14 |                            5 |
+| EmDash 0.1.0 release candidate  |           1903 |     2711 |                 14 |                            5 |
 | n8n OpenAnalytics 0.1.1         |            607 |      613 |                  5 |                           11 |
 
 PR #2 adds **963 production lines** and **1202 test lines**
@@ -25,6 +26,15 @@ PR #3 adds **312 production lines** and **500 test lines** over merged PR #2
 The admin coordinator delegates range handling, connection blocks, overview/chart
 rendering, and report tables to four small modules. Successful sections remain
 visible when another read fails.
+
+The release candidate is `@blackswampai/emdash-plugin-openanalytics`, from
+`BlackSwampAI/emdash-plugin-openanalytics`, with native plugin ID `openanalytics`.
+Release hardening adds automatic first-load validation, connection controls apart
+from the date range, bounded upstream responses and route bodies, package checks,
+and a form-driven screenshot setup. It adds no analytics reports or endpoints.
+A fresh connection adds one site read before the existing four analytics reads;
+matching snapshots skip that site read on revisits and range changes. Failed
+configuration fingerprints require an explicit connection retry.
 
 The EmDash plugin now owns a native admin page, public tracker insertion,
 credential-bound installation snapshots, secure read transport, response
@@ -76,3 +86,4 @@ size. EmDash PR #3 packs to **about 23.7 kB** (decimal), compared with
 Its package includes compiled workflow operations, source maps, and icons; the
 EmDash package includes the compiled plugin, declarations, README, and two
 contract/footprint documents. Package size reflects those different contents.
+The current 0.1.0 release candidate packs to approximately **26.5 kB** (decimal).

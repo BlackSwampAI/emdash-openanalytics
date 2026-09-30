@@ -105,7 +105,9 @@ export function errorForStatus(
 				"rate_limited",
 				undefined,
 				status,
-				seconds !== undefined && Number.isSafeInteger(seconds) ? seconds : undefined,
+				seconds !== undefined && Number.isSafeInteger(seconds) && seconds <= 86_400
+					? seconds
+					: undefined,
 			);
 		}
 		default:
