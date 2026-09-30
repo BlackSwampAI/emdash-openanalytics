@@ -1,0 +1,62 @@
+{
+	"name": "@blackswampai/emdash-openanalytics",
+	"version": "0.1.0",
+	"description": "Native EmDash plugin for OpenAnalytics",
+	"keywords": [
+		"analytics",
+		"emdash",
+		"emdash-plugin",
+		"openanalytics"
+	],
+	"homepage": "https://github.com/BlackSwampAI/emdash-openanalytics#readme",
+	"bugs": {
+		"url": "https://github.com/BlackSwampAI/emdash-openanalytics/issues"
+	},
+	"license": "MIT",
+	"author": "Black Swamp AI",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/BlackSwampAI/emdash-openanalytics.git"
+	},
+	"files": [
+		"dist",
+		"docs"
+	],
+	"type": "module",
+	"main": "./dist/index.mjs",
+	"types": "./dist/index.d.mts",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.mts",
+			"import": "./dist/index.mjs"
+		}
+	},
+	"scripts": {
+		"build": "tsdown src/index.ts --format esm --dts --clean",
+		"dev": "tsdown src/index.ts --format esm --dts --watch",
+		"typecheck": "tsc --noEmit",
+		"test": "vitest run",
+		"lint": "oxlint --deny-warnings",
+		"format": "oxfmt --ignore-path .gitignore",
+		"format:check": "oxfmt --ignore-path .gitignore --check",
+		"check": "npm run typecheck && npm run lint && npm run format:check && npm run test && npm run build && npm run package:check",
+		"package:check": "node scripts/check-package.mjs && npm pack --dry-run",
+		"prepublishOnly": "npm run check"
+	},
+	"devDependencies": {
+		"@types/node": "24.10.1",
+		"emdash": "1.0.1",
+		"oxfmt": "0.59.0",
+		"oxlint": "1.74.0",
+		"tsdown": "0.20.3",
+		"typescript": "5.9.3",
+		"vitest": "4.0.15"
+	},
+	"peerDependencies": {
+		"emdash": ">=1.0.1 <2"
+	},
+	"engines": {
+		"node": ">=22.16"
+	},
+	"packageManager": "pnpm@10.32.1"
+}
