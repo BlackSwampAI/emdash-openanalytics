@@ -21,4 +21,11 @@ export const settingsSchema = {
 		description: "Load the OpenAnalytics tracking script on public pages.",
 		default: true,
 	},
+	timezone: {
+		type: "string",
+		label: "Analytics timezone",
+		description:
+			"IANA timezone used for OpenAnalytics date ranges and freshness labels (for example, America/New_York).",
+		default: "UTC",
+	},
 } satisfies Record<string, SettingField>;
