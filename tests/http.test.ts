@@ -3,7 +3,13 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { getOverview, getSite, getTimeseries } from "../src/openanalytics/client";
+import {
+	getOverview,
+	getPages,
+	getSite,
+	getSources,
+	getTimeseries,
+} from "../src/openanalytics/client";
 import { OpenAnalyticsError } from "../src/openanalytics/errors";
 import { parseConfiguration } from "../src/settings/config";
 
@@ -56,6 +62,8 @@ async function route(request: IncomingMessage, response: ServerResponse) {
 			"/api-root/v1/read/site",
 			"/api-root/v1/read/analytics/overview",
 			"/api-root/v1/read/analytics/timeseries",
+			"/api-root/v1/read/analytics/pages",
+			"/api-root/v1/read/analytics/sources",
 		].includes(path)
 	) {
 		response.writeHead(404);
@@ -86,7 +94,7 @@ async function route(request: IncomingMessage, response: ServerResponse) {
 		requested_range: { from: url.searchParams.get("from"), to: url.searchParams.get("to") },
 		effective_range: { from: url.searchParams.get("from"), to: url.searchParams.get("to") },
 		timezone: url.searchParams.get("timezone"),
-		resolution: url.searchParams.get("resolution"),
+		resolution: url.searchParams.get("resolution") ?? "hour",
 		data_sources: ["live"],
 		accuracy: "exact",
 		freshness: { state: "ok", watermark: analyticsQuery.to, as_of: analyticsQuery.to },
@@ -101,11 +109,40 @@ async function route(request: IncomingMessage, response: ServerResponse) {
 				totals: { events: 1200, pageviews: 980, visitors: 380, billable_events: 1150 },
 				comparison: null,
 			}
-		: {
-				meta,
-				series: [{ bucket: analyticsQuery.from, events: 50, pageviews: 40, visitors: 20 }],
-				comparison: null,
-			};
+		: path.endsWith("/timeseries")
+			? {
+					meta,
+					series: [{ bucket: analyticsQuery.from, events: 50, pageviews: 40, visitors: 20 }],
+					comparison: null,
+				}
+			: path.endsWith("/pages")
+				? {
+						meta,
+						items: [
+							{
+								page_path: "/",
+								views: 40,
+								visitors: 20,
+								entrances: 12,
+								exits: 8,
+								bounces: 3,
+								bounce_rate: 0.25,
+							},
+						],
+					}
+				: {
+						meta,
+						items: [
+							{
+								referrer_domain: "google.com",
+								utm_source: "",
+								utm_medium: "",
+								utm_campaign: "",
+								views: 40,
+								visitors: 20,
+							},
+						],
+					};
 	sendJson(response, body);
 }
 
@@ -199,6 +236,36 @@ describe("OpenAnalytics HTTP transport", () => {
 					parseConfiguration({ apiUrl: baseUrl, readKey, timeoutMs: 20 }),
 					analyticsQuery,
 				),
+			).rejects.toMatchObject({ kind: "timeout" });
+		} finally {
+			slowResponse = false;
+		}
+	});
+
+	it.each([
+		["pages", getPages],
+		["sources", getSources],
+	] as const)("refuses redirects for the %s report without following them", async (_name, call) => {
+		redirectedRequestCount = 0;
+		redirectToFixture = true;
+		try {
+			await expect(
+				call(parseConfiguration({ apiUrl: baseUrl, readKey }), analyticsQuery),
+			).rejects.toMatchObject({ kind: "network" });
+			expect(redirectedRequestCount).toBe(0);
+		} finally {
+			redirectToFixture = false;
+		}
+	});
+
+	it.each([
+		["pages", getPages],
+		["sources", getSources],
+	] as const)("times out while the %s report response body is pending", async (_name, call) => {
+		slowResponse = true;
+		try {
+			await expect(
+				call(parseConfiguration({ apiUrl: baseUrl, readKey, timeoutMs: 20 }), analyticsQuery),
 			).rejects.toMatchObject({ kind: "timeout" });
 		} finally {
 			slowResponse = false;

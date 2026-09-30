@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { getOverview, getTimeseries } from "../src/openanalytics/client";
+import { getOverview, getPages, getSources, getTimeseries } from "../src/openanalytics/client";
 import { OpenAnalyticsError } from "../src/openanalytics/errors";
 import { parseConfiguration } from "../src/settings/config";
 
@@ -51,6 +51,41 @@ const timeseries = {
 	comparison: null,
 };
 
+const reportQuery = {
+	from: query.from,
+	to: query.to,
+	timezone: query.timezone,
+};
+
+const pages = {
+	meta,
+	items: [
+		{
+			page_path: "/blog/openanalytics",
+			views: 712,
+			visitors: 518,
+			entrances: 201,
+			exits: 95,
+			bounces: 41,
+			bounce_rate: 41 / 201,
+		},
+	],
+};
+
+const sources = {
+	meta,
+	items: [
+		{
+			referrer_domain: "google.com",
+			utm_source: "",
+			utm_medium: "",
+			utm_campaign: "",
+			views: 240,
+			visitors: 210,
+		},
+	],
+};
+
 function mockFetch(status: number, body: unknown, headers: HeadersInit = {}) {
 	const response = new Response(typeof body === "string" ? body : JSON.stringify(body), {
 		status,
@@ -64,6 +99,157 @@ function mockFetch(status: number, body: unknown, headers: HeadersInit = {}) {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("OpenAnalytics analytics read client", () => {
+	it.each([
+		["pages", getPages, pages],
+		["sources", getSources, sources],
+	] as const)(
+		"reads typed %s rows with the explicit selected range, timezone, and limit",
+		async (name, call, body) => {
+			const fetchMock = mockFetch(200, body);
+			const result = await call(config, reportQuery);
+			expect(result).toEqual(body);
+			const [input, init] = fetchMock.mock.calls[0] ?? [];
+			const url = new URL(String(input));
+			expect(url.pathname).toBe(`/v1/read/analytics/${name}`);
+			expect(url.searchParams.get("from")).toBe(query.from);
+			expect(url.searchParams.get("to")).toBe(query.to);
+			expect(url.searchParams.get("timezone")).toBe(query.timezone);
+			expect(url.searchParams.get("limit")).toBe("10");
+			expect(url.searchParams.get("sort")).toBe(name === "pages" ? "views" : null);
+			expect(url.searchParams.has("resolution")).toBe(false);
+			expect(init).toMatchObject({ redirect: "error", cache: "no-store" });
+		},
+	);
+
+	it.each([
+		["pages", getPages, pages],
+		["sources", getSources, sources],
+	] as const)(
+		"accepts an empty %s result and supports a custom top-N limit",
+		async (_name, call, body) => {
+			const fetchMock = mockFetch(200, { ...body, items: [] });
+			expect((await call(config, { ...reportQuery, limit: 500 })).items).toEqual([]);
+			expect(new URL(String(fetchMock.mock.calls[0]?.[0])).searchParams.get("limit")).toBe("500");
+		},
+	);
+
+	it.each([
+		["pages", getPages, pages],
+		["sources", getSources, sources],
+	] as const)(
+		"projects documented %s fields and ignores additive upstream fields",
+		async (_name, call, body) => {
+			mockFetch(200, {
+				meta: { ...meta, ignored_future_meta: readKey },
+				items: [{ ...body.items[0], ignored_future_field: readKey }],
+				ignored: readKey,
+			});
+			const result = await call(config, reportQuery);
+			expect(JSON.stringify(result)).not.toContain(readKey);
+			expect(result.items[0]).not.toHaveProperty("ignored_future_field");
+			expect(result.meta).not.toHaveProperty("ignored_future_meta");
+		},
+	);
+
+	it.each([
+		["pages", getPages, pages, "items"],
+		["sources", getSources, sources, "items"],
+	] as const)("rejects malformed %s rows and metadata", async (_name, call, body, field) => {
+		mockFetch(200, { ...body, [field]: [{ ...body.items[0], views: -1 }] });
+		await expect(call(config, reportQuery)).rejects.toMatchObject({ kind: "invalid_response" });
+		mockFetch(200, { ...body, meta: { ...meta, truncated: "false" } });
+		await expect(call(config, reportQuery)).rejects.toMatchObject({ kind: "invalid_response" });
+		mockFetch(200, { ...body, meta: { ...meta, freshness: null } });
+		await expect(call(config, reportQuery)).rejects.toMatchObject({ kind: "invalid_response" });
+		mockFetch(200, {
+			...body,
+			meta: { ...meta, comparison_range: { from: query.from, to: query.to } },
+		});
+		await expect(call(config, reportQuery)).rejects.toMatchObject({ kind: "invalid_response" });
+	});
+
+	it.each([
+		{ ...pages, items: [{ ...pages.items[0], entrances: undefined }] },
+		{ ...pages, items: [{ ...pages.items[0], bounce_rate: 1.1 }] },
+		{
+			...pages,
+			items: [
+				{
+					...pages.items[0],
+					entrances: 0,
+					exits: 0,
+					bounces: 0,
+					bounce_rate: null,
+				},
+			],
+		},
+		{
+			...pages,
+			items: [
+				{
+					...pages.items[0],
+					entrances: null,
+					exits: null,
+					bounces: null,
+					bounce_rate: null,
+				},
+			],
+		},
+	])("rejects missing or invalid nullable session measures", async (body) => {
+		mockFetch(200, body);
+		if (body.items[0]?.entrances === 0 || body.items[0]?.entrances === null) {
+			expect((await getPages(config, reportQuery)).items[0]).toMatchObject(body.items[0]);
+		} else {
+			await expect(getPages(config, reportQuery)).rejects.toMatchObject({
+				kind: "invalid_response",
+			});
+		}
+	});
+
+	it("rejects private-key material in projected page or source fields", async () => {
+		mockFetch(200, { ...pages, items: [{ ...pages.items[0], page_path: `/path/${readKey}` }] });
+		await expect(getPages(config, reportQuery)).rejects.toMatchObject({ kind: "invalid_response" });
+		mockFetch(200, {
+			...sources,
+			items: [{ ...sources.items[0], utm_campaign: encodeURIComponent(readKey) }],
+		});
+		await expect(getSources(config, reportQuery)).rejects.toMatchObject({
+			kind: "invalid_response",
+		});
+	});
+
+	it.each([
+		[401, {}, "unauthorized"],
+		[403, { error: { code: "FORBIDDEN" } }, "analytics_forbidden"],
+		[403, { error: { code: "SITE_SUSPENDED" } }, "suspended"],
+		[400, { error: { code: "RANGE_TOO_LARGE" } }, "range_invalid"],
+		[429, {}, "rate_limited"],
+		[500, {}, "server"],
+		[503, {}, "server"],
+	] as const)(
+		"normalizes report HTTP %i without exposing response content",
+		async (status, payload, kind) => {
+			mockFetch(status, { ...payload, detail: readKey }, { "retry-after": "13" });
+			await expect(getPages(config, reportQuery)).rejects.toMatchObject({ kind, status });
+			mockFetch(status, { ...payload, detail: readKey }, { "retry-after": "13" });
+			await expect(getSources(config, reportQuery)).rejects.toMatchObject({ kind, status });
+		},
+	);
+
+	it.each([getPages, getSources] as const)(
+		"rejects invalid report limits before requesting",
+		async (call) => {
+			for (const limit of [0, 501, 1.5]) {
+				const fetchMock = vi.fn();
+				vi.stubGlobal("fetch", fetchMock);
+				await expect(call(config, { ...reportQuery, limit })).rejects.toMatchObject({
+					kind: "configuration",
+				});
+				expect(fetchMock).not.toHaveBeenCalled();
+			}
+		},
+	);
+
 	it("reads the typed overview with explicit range, timezone, and resolution", async () => {
 		const fetchMock = mockFetch(200, overview);
 

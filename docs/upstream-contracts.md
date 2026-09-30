@@ -51,9 +51,10 @@ The published `@emdash-cms/blocks@1.0.1` types define headers, fields, actions,
 selects/buttons, stats, banners, context, and a native timeseries chart with
 `config.chart_type: "timeseries"` and `[timestamp_ms, value]` points. The host
 owns chart rendering, typography, spacing, navigation, and initial loading.
-Forms, tables (including badge cells), and tabs are available but unnecessary
-for this page. There is no standalone status badge or plugin-owned loading
-block; banners/fields represent connection state.
+Forms, tables (including badge cells), and tabs are available; this page now
+uses native tables for Top Pages and Traffic Sources. There is no standalone
+status badge or plugin-owned loading block; banners/fields represent connection
+state.
 
 Only Block Kit **types** are imported in production; the blocks package is a
 development dependency and its React/chart renderer is not bundled. Tests use
@@ -145,12 +146,83 @@ and [read-key route implementation](https://github.com/OpenLabs-so/openanalytics
   can return HTTP 400.
 
 The CMS guide recommends reads on actual admin use and warns against sharing a
-read-key response cache across administrators. Each overview interaction makes
-only two analytics reads; validation explicitly adds one site read. No polling,
-automatic retries, or extra read endpoints are introduced.
+read-key response cache across administrators. Each analytics page interaction
+reads overview, timeseries, pages, and sources; validation adds one site read.
+No polling or automatic retries are introduced.
 
 The native timeseries chart has no timezone formatting option. OpenAnalytics
 aligns the returned buckets to the configured timezone, and the page formats
 range/freshness text in that timezone, but native chart tick/tooltips use the
 administrator's browser timezone. The UI discloses this and uses a neutral axis
 label; timestamps are never shifted to fake timezone formatting.
+
+## Top pages and traffic sources
+
+Verified again against OpenAnalytics `main` at
+[`f7fc9169f32d48e55eb9106bceae9e87b6aa6bb9`](https://github.com/OpenLabs-so/openanalytics/tree/f7fc9169f32d48e55eb9106bceae9e87b6aa6bb9)
+on 2026-09-29; `git ls-remote origin refs/heads/main` matched this SHA.
+
+The plugin uses these private read-key operations:
+
+```http
+GET /v1/read/analytics/pages?from=...&to=...&timezone=...&limit=10&sort=views
+GET /v1/read/analytics/sources?from=...&to=...&timezone=...&limit=10
+```
+
+Both require `from`, `to`, and `timezone`. The instants are ISO-8601 UTC and
+form a half-open interval: `from` is included and `to` is excluded. `timezone`
+is an IANA timezone used to interpret calendar boundaries. `limit` is optional
+and accepts integers 1 through 500 (default 100); this plugin requests 10 rows.
+Pages also accepts `sort` (`views`, `entrances`, or `exits`, default `views`)
+and both endpoints accept optional session-scoped `filters`. The site selector
+header is not sent with a private site-bound key; it is for OAuth credentials.
+
+Pages returns `{ meta, items }`. A row requires `page_path`, `views`,
+`visitors`, `entrances`, `exits`, `bounces`, and `bounce_rate`. Counts are
+nonnegative integers. Session measures may be null: null means the metric was
+not measured, the session-decoration read did not cover that path, or the row
+is imported; zero means the server measured zero. `entrances` counts sessions
+that began on a path, `exits` sessions ending there, and `bounces` unengaged
+sessions counted on their entry path. `bounce_rate` is `bounces / entrances`
+and is null when no denominator was measured. Pages are ranked and cut by the
+server according to `sort`; re-sorting a views-limited response in the client
+would misrepresent the top-N result.
+
+Sources returns `{ meta, items }`. A row requires the string tuple
+`referrer_domain`, `utm_source`, `utm_medium`, and `utm_campaign`, plus
+nonnegative integer `views` and `visitors`. The canonical external referrer is
+a lowercase host without `www`, port, or path. Empty `referrer_domain` means
+Direct and also includes internal navigation; historical stored spellings were
+not rewritten. UTM fields may be empty. Rows represent attribution tuples, not
+sessions, and the report is ranked/cut by views.
+
+Both responses require metadata describing requested and effective ranges,
+timezone, resolution, data sources, accuracy, freshness, comparison range,
+truncation, cache state, and partial state. For these reports
+`comparison_range` is null. Freshness state distinguishes `no_data`, `ok`,
+`stale`, and `degraded`. Reports can merge live events with imported provider
+data; metadata identifies sources and whether results are exact,
+provider-defined, or estimated. A legitimate empty result is an empty `items`
+array, not an error.
+
+The documented HTTP responses are 400 for invalid/unservable ranges, 401 for
+missing/invalid authentication, 403 for missing analytics scope or suspended
+site, 404 for unknown site, 429 for rate limiting, and 503 when analytics
+storage is unavailable. Error envelopes carry stable codes, including
+`FORBIDDEN`, `SITE_SUSPENDED`, `RANGE_TOO_LARGE`, and
+`SERVICE_UNAVAILABLE`; clients should not display response messages as trusted
+content. A suspended site closes analytics reads with `SITE_SUSPENDED`;
+tracker installation state is a separate concern. Hosted deployments may
+have a limited billing-grace period for ingest, governed by the collector's
+admission policy.
+
+Primary source locations in that pinned revision:
+
+- `packages/contracts/openapi/openapi.yaml:1529-1594` — paths, auth and HTTP responses.
+- `packages/contracts/openapi/openapi.yaml:8468-8505` — analytics metadata and freshness.
+- `packages/contracts/openapi/openapi.yaml:8777-8889` — pages and sources row schemas.
+- `packages/contracts/openapi/openapi.yaml:12030-12079,12152-12161,12218-12237` — site selector, range/timezone, limit and pages sort.
+- `apps/api/src/http/read-key.ts:896-920` — private-key pages read and session decoration.
+- `apps/api/src/analytics/service.ts:1036-1072,1168-1180` — pages session decoration/ranking and sources view ranking.
+- `apps/api/src/http/middleware.ts:183-197` and `apps/api/src/http/read-key.ts:600-608` — suspended-site analytics gate.
+- `apps/tracker/src/core.ts:81-90` and `apps/collector/src/ingest-config-store.ts:215-270` — tracker stand-down and collector admission during suspension.

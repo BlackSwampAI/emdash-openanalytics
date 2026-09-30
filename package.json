@@ -20,7 +20,8 @@
 	},
 	"files": [
 		"dist",
-		"docs"
+		"docs/implementation-footprint.md",
+		"docs/upstream-contracts.md"
 	],
 	"type": "module",
 	"main": "./dist/index.mjs",
@@ -34,6 +35,8 @@
 	"scripts": {
 		"build": "tsdown src/index.ts --format esm --dts --clean",
 		"dev": "tsdown src/index.ts --format esm --dts --watch",
+		"demo": "npm run screenshot",
+		"screenshot": "npm run build && node scripts/screenshot-demo.mjs",
 		"typecheck": "tsc --noEmit",
 		"test": "vitest run",
 		"lint": "oxlint --deny-warnings",
@@ -44,11 +47,17 @@
 		"prepublishOnly": "npm run check"
 	},
 	"devDependencies": {
+		"@astrojs/node": "11.1.6",
+		"@astrojs/react": "7.0.0",
 		"@emdash-cms/blocks": "1.0.1",
 		"@types/node": "24.10.1",
+		"astro": "7.3.5",
 		"emdash": "1.0.1",
 		"oxfmt": "0.59.0",
 		"oxlint": "1.74.0",
+		"playwright": "1.61.1",
+		"react": "19.3.0",
+		"react-dom": "19.3.0",
 		"tsdown": "0.20.3",
 		"typescript": "5.9.3",
 		"vitest": "4.0.15"

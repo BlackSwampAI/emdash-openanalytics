@@ -125,9 +125,19 @@ function installFetch(
 		site?: unknown;
 		analyticsStatus?: number;
 		analyticsErrorCode?: string;
+		analyticsFailurePath?: string;
 		siteStatus?: number;
 		missingFreshness?: boolean;
 		freshnessState?: string;
+		emptyReports?: boolean;
+		sourceRows?: Array<{
+			referrer_domain: string;
+			utm_source: string;
+			utm_medium: string;
+			utm_campaign: string;
+			views: number;
+			visitors: number;
+		}>;
 	} = {},
 ) {
 	const requests: Array<{ url: string; init: RequestInit | undefined }> = [];
@@ -168,7 +178,11 @@ function installFetch(
 				headers: { "content-type": "application/json" },
 			});
 		}
-		if (options.analyticsStatus && options.analyticsStatus !== 200) {
+		if (
+			options.analyticsStatus &&
+			options.analyticsStatus !== 200 &&
+			(!options.analyticsFailurePath || path.endsWith(options.analyticsFailurePath))
+		) {
 			return new Response(
 				JSON.stringify({
 					error: {
@@ -225,11 +239,48 @@ function installFetch(
 						? { totals: { events: 1100, pageviews: 900, visitors: 350, billable_events: 1000 } }
 						: null,
 				}
-			: {
-					meta: responseMetadata,
-					series: [{ bucket: meta.effective_range.from, events: 30, pageviews: 25, visitors: 20 }],
-					comparison: null,
-				};
+			: path.endsWith("/timeseries")
+				? {
+						meta: responseMetadata,
+						series: [
+							{ bucket: meta.effective_range.from, events: 30, pageviews: 25, visitors: 20 },
+						],
+						comparison: null,
+					}
+				: path.endsWith("/analytics/pages")
+					? {
+							meta: responseMetadata,
+							items: options.emptyReports
+								? []
+								: [
+										{
+											page_path: "/blog/openanalytics",
+											views: 712,
+											visitors: 518,
+											entrances: 80,
+											exits: 42,
+											bounces: 20,
+											bounce_rate: 0.25,
+											ignored: privateKey,
+										},
+									],
+						}
+					: {
+							meta: responseMetadata,
+							items: options.emptyReports
+								? []
+								: (options.sourceRows ?? [
+										{
+											referrer_domain: "reddit.com",
+											utm_source: "reddit",
+											utm_medium: "social",
+											utm_campaign: "launch",
+											views: 301,
+											visitors: 230,
+											ignored: privateKey,
+										},
+									]),
+						};
 		return new Response(JSON.stringify(body), {
 			status: 200,
 			headers: { "content-type": "application/json" },
@@ -485,7 +536,12 @@ describe("OpenAnalytics native admin page", () => {
 		expect(output).toContain("Previous period: 350");
 		expect(output).toContain("Previous period: 900");
 		expect(output).not.toContain(privateKey);
-		expect(fetchMock).toHaveBeenCalledTimes(3);
+		expect(fetchMock).toHaveBeenCalledTimes(5);
+		expect(output).toContain("Top Pages");
+		expect(output).toContain("/blog/openanalytics");
+		expect(output).toContain("Traffic Sources");
+		expect(output).toContain("reddit.com");
+		expect(output).toContain("medium: social");
 		for (const { url, init } of requests) {
 			expect(url).not.toContain(privateKey);
 			if (url.includes("analytics/")) {
@@ -494,13 +550,26 @@ describe("OpenAnalytics native admin page", () => {
 				expect(parsed.searchParams.get("to")).toBeTruthy();
 				expect(parsed.searchParams.get("timezone")).toBe("America/New_York");
 				expect(parsed.searchParams.get("resolution")).toBe(
-					parsed.pathname.endsWith("/overview") ? "hour" : "day",
+					parsed.pathname.endsWith("/overview") || parsed.pathname.endsWith("/timeseries")
+						? parsed.pathname.endsWith("/overview")
+							? "hour"
+							: "day"
+						: null,
 				);
 				expect(parsed.searchParams.get("compare")).toBe(
 					parsed.pathname.endsWith("/overview") ? "true" : null,
 				);
 				expect(init?.headers).toMatchObject({ Authorization: `Bearer ${privateKey}` });
 			}
+		}
+		const firstRangeQueries = requests
+			.filter(({ url }) => url.includes("analytics/"))
+			.map(({ url }) => new URL(url));
+		expect(firstRangeQueries).toHaveLength(4);
+		for (const query of firstRangeQueries) {
+			expect(query.searchParams.get("from")).toBe(firstRangeQueries[0]!.searchParams.get("from"));
+			expect(query.searchParams.get("to")).toBe(firstRangeQueries[0]!.searchParams.get("to"));
+			expect(query.searchParams.get("timezone")).toBe("America/New_York");
 		}
 		const hourly = await dispatchAdmin(
 			runtime,
@@ -509,7 +578,7 @@ describe("OpenAnalytics native admin page", () => {
 		);
 		expect(hourly.response.status).toBe(200);
 		const analyticsRequests = requests.filter(({ url }) => url.includes("analytics/"));
-		const lastPair = analyticsRequests.slice(-2).map(({ url }) => new URL(url));
+		const lastPair = analyticsRequests.slice(-4).map(({ url }) => new URL(url));
 		const recentQuery = lastPair[0]!;
 		const from = Date.parse(recentQuery.searchParams.get("from")!);
 		const to = Date.parse(recentQuery.searchParams.get("to")!);
@@ -535,26 +604,31 @@ describe("OpenAnalytics native admin page", () => {
 			expect(selected.response.status).toBe(200);
 			const pair = requests
 				.filter(({ url }) => url.includes("analytics/"))
-				.slice(-2)
+				.slice(-4)
 				.map(({ url }) => new URL(url));
+			const byPath = (suffix: string) => pair.find((item) => item.pathname.endsWith(suffix))!;
 			const rangeMs =
-				Date.parse(pair[0]!.searchParams.get("to")!) -
-				Date.parse(pair[0]!.searchParams.get("from")!);
+				Date.parse(byPath("/overview").searchParams.get("to")!) -
+				Date.parse(byPath("/overview").searchParams.get("from")!);
 			expect(rangeMs).toBeCloseTo(days * 24 * 60 * 60 * 1000, -2);
-			expect(
-				pair.find((item) => item.pathname.endsWith("/overview"))!.searchParams.get("resolution"),
-			).toBe("hour");
-			expect(
-				pair.find((item) => item.pathname.endsWith("/timeseries"))!.searchParams.get("resolution"),
-			).toBe("day");
-			expect(pair[0]!.searchParams.get("from")).toBe(pair[1]!.searchParams.get("from"));
-			expect(pair[0]!.searchParams.get("to")).toBe(pair[1]!.searchParams.get("to"));
-			expect(
-				pair.find((item) => item.pathname.endsWith("/overview"))!.searchParams.get("compare"),
-			).toBe("true");
-			expect(
-				pair.find((item) => item.pathname.endsWith("/timeseries"))!.searchParams.has("compare"),
-			).toBe(false);
+			expect(byPath("/overview").searchParams.get("resolution")).toBe("hour");
+			expect(byPath("/timeseries").searchParams.get("resolution")).toBe("day");
+			for (const reportPath of ["/pages", "/sources"]) {
+				const report = byPath(reportPath);
+				expect(report.searchParams.get("from")).toBe(byPath("/overview").searchParams.get("from"));
+				expect(report.searchParams.get("to")).toBe(byPath("/overview").searchParams.get("to"));
+				expect(report.searchParams.get("timezone")).toBe("America/New_York");
+				expect(report.searchParams.get("limit")).toBe("10");
+				expect(report.searchParams.has("resolution")).toBe(false);
+			}
+			expect(byPath("/timeseries").searchParams.get("from")).toBe(
+				byPath("/overview").searchParams.get("from"),
+			);
+			expect(byPath("/timeseries").searchParams.get("to")).toBe(
+				byPath("/overview").searchParams.get("to"),
+			);
+			expect(byPath("/overview").searchParams.get("compare")).toBe("true");
+			expect(byPath("/timeseries").searchParams.has("compare")).toBe(false);
 			expect(JSON.stringify(selected.data)).toContain(`Last ${days} days`);
 		}
 	});
@@ -579,6 +653,179 @@ describe("OpenAnalytics native admin page", () => {
 		);
 		expect(JSON.stringify(result.data)).toContain("No tracking key");
 		expect(requests.some(({ url }) => url.includes("analytics/"))).toBe(true);
+	});
+
+	it("renders empty report states as native tables with no pagination controls", async () => {
+		const runtime = await makeRuntime();
+		installFetch({ emptyReports: true });
+		await setSettings(runtime, {
+			apiUrl,
+			privateReadKey: privateKey,
+			trackingEnabled: true,
+			timezone: "UTC",
+		});
+		await validate(runtime, { role: 50, tokenScopes: ["admin"] });
+		const result = await dispatchAdmin(
+			runtime,
+			{ type: "page_load", page: "/analytics" },
+			{ role: 50, tokenScopes: ["admin"] },
+		);
+		const text = JSON.stringify(result.data);
+		expect(text).toContain("No page activity in this range.");
+		expect(text).toContain("No traffic sources recorded in this range.");
+		const tables = (result.data.blocks?.filter((block) => block.type === "table") ?? []) as Array<{
+			rows?: unknown[];
+			next_cursor?: unknown;
+			columns?: Array<{ sortable?: boolean }>;
+		}>;
+		expect(tables).toHaveLength(2);
+		for (const table of tables) {
+			expect(table.rows).toEqual([]);
+			expect(table.next_cursor).toBeUndefined();
+			expect(table.columns?.some((column: { sortable?: boolean }) => column.sortable)).toBe(false);
+		}
+		expect(validateBlockResponse(result.data, { pluginPagePaths: ["/analytics"] }).valid).toBe(
+			true,
+		);
+	});
+
+	it("labels tagged traffic without misclassifying it as direct or internal", async () => {
+		const runtime = await makeRuntime();
+		installFetch({
+			sourceRows: [
+				{
+					referrer_domain: "",
+					utm_source: "newsletter",
+					utm_medium: "email",
+					utm_campaign: "launch",
+					views: 42,
+					visitors: 31,
+				},
+				{
+					referrer_domain: "",
+					utm_source: "",
+					utm_medium: "paid",
+					utm_campaign: "spring",
+					views: 12,
+					visitors: 8,
+				},
+				{
+					referrer_domain: "",
+					utm_source: "",
+					utm_medium: "",
+					utm_campaign: "",
+					views: 5,
+					visitors: 4,
+				},
+			],
+		});
+		await setSettings(runtime, {
+			apiUrl,
+			privateReadKey: privateKey,
+			trackingEnabled: true,
+			timezone: "UTC",
+		});
+		await validate(runtime, { role: 50, tokenScopes: ["admin"] });
+		const result = await dispatchAdmin(
+			runtime,
+			{ type: "page_load", page: "/analytics" },
+			{ role: 50, tokenScopes: ["admin"] },
+		);
+		const table = result.data.blocks?.find(
+			(block) => block.type === "table" && JSON.stringify(block.columns).includes('"source"'),
+		);
+		const text = JSON.stringify(table);
+		expect(text).toContain("newsletter · medium: email · campaign: launch");
+		expect(text).toContain("No referrer · medium: paid · campaign: spring");
+		expect(text).toContain("Direct / internal");
+		expect(text).not.toContain("Direct / internal · newsletter");
+	});
+
+	it.each([
+		[
+			"/v1/read/analytics/pages",
+			"Top pages temporarily unavailable.",
+			"Traffic Sources",
+			"reddit.com",
+		],
+		[
+			"/v1/read/analytics/sources",
+			"Traffic sources temporarily unavailable.",
+			"/blog/openanalytics",
+			"Visitors",
+		],
+	] as const)(
+		"isolates report failure for %s",
+		async (failurePath, sectionMessage, visiblePage, otherReport) => {
+			const runtime = await makeRuntime();
+			installFetch({ analyticsStatus: 503, analyticsFailurePath: failurePath });
+			await setSettings(runtime, {
+				apiUrl,
+				privateReadKey: privateKey,
+				trackingEnabled: true,
+				timezone: "UTC",
+			});
+			await validate(runtime, { role: 50, tokenScopes: ["admin"] });
+			const result = await dispatchAdmin(
+				runtime,
+				{ type: "page_load", page: "/analytics" },
+				{ role: 50, tokenScopes: ["admin"] },
+			);
+			const output = JSON.stringify(result.data);
+			expect(output).toContain("Visitors");
+			expect(output).toContain(visiblePage);
+			expect(output).toContain(otherReport);
+			expect(output).toContain(sectionMessage);
+			expect(output).not.toContain(privateKey);
+		},
+	);
+
+	it.each([
+		["/overview", "Overview unavailable", "Chart covers", "reddit.com"],
+		["/timeseries", "Chart unavailable", "Previous period: 350", "/blog/openanalytics"],
+	] as const)(
+		"keeps the other analytics sections visible when %s fails",
+		async (failurePath, message, survivingOverview, survivingReport) => {
+			const runtime = await makeRuntime();
+			installFetch({ analyticsStatus: 503, analyticsFailurePath: failurePath });
+			await setSettings(runtime, {
+				apiUrl,
+				privateReadKey: privateKey,
+				trackingEnabled: true,
+				timezone: "UTC",
+			});
+			await validate(runtime, { role: 50, tokenScopes: ["admin"] });
+			const result = await dispatchAdmin(
+				runtime,
+				{ type: "page_load", page: "/analytics" },
+				{ role: 50, tokenScopes: ["admin"] },
+			);
+			const output = JSON.stringify(result.data);
+			expect(output).toContain(message);
+			expect(output).toContain(survivingOverview);
+			expect(output).toContain(survivingReport);
+			expect(output).not.toContain(privateKey);
+		},
+	);
+
+	it("shows tracker installation separately from suspended collection state", async () => {
+		const runtime = await makeRuntime();
+		installFetch({ site: { ...site, status: "suspended" } });
+		await setSettings(runtime, {
+			apiUrl,
+			privateReadKey: privateKey,
+			trackingEnabled: true,
+			timezone: "UTC",
+		});
+		await validate(runtime, { role: 50, tokenScopes: ["admin"] });
+		const result = await dispatchAdmin(
+			runtime,
+			{ type: "page_load", page: "/analytics" },
+			{ role: 50, tokenScopes: ["admin"] },
+		);
+		expect(JSON.stringify(result.data)).toContain("Tracker installed · collection suspended");
+		expect(JSON.stringify(result.data)).not.toContain("Tracking inactive");
+		expect(await renderedTracking(runtime)).toContain('data-key="oa_pk_admin_public"');
 	});
 
 	it.each([
@@ -722,7 +969,7 @@ describe("OpenAnalytics native admin page", () => {
 		expect(validated.response.status).toBe(200);
 		expect(JSON.stringify(validated.data)).toContain("Connected");
 		expect(JSON.stringify(validated.data)).not.toContain(privateKey);
-		expect(fetchMock).toHaveBeenCalledTimes(3);
+		expect(fetchMock).toHaveBeenCalledTimes(5);
 	});
 
 	it("keeps a matching validated snapshot through transient revalidation failures", async () => {

@@ -4,7 +4,8 @@ Native EmDash CMS integration for OpenAnalytics, by Black Swamp AI.
 
 Native connection validation, public-site tracker installation, and an analytics
 overview inside EmDash. The admin page uses EmDash Block Kit controls, metric
-cards, notices, and a timeseries chart. Private credentials stay on the server.
+cards, notices, a timeseries chart, Top Pages, and Traffic Sources. Private
+credentials stay on the server.
 
 ## Installation
 
@@ -103,8 +104,19 @@ numbers are easier to interpret. Missing freshness is shown as unavailable.
 Authentication failures, missing analytics scope, suspended service, rate limits,
 and unavailable upstream service have safe messages and validation/retry controls.
 
-Opening the page or changing its range makes two server-side reads: overview and
-timeseries. Revalidation first reads site metadata and refreshes the installation
+Top Pages shows the first ten pages ranked by views, with views and visitors.
+Traffic Sources shows the first ten attribution groups ranked by views, with
+views and visitors. Campaign source, medium, and campaign values appear when
+recorded; rows with the same referrer can represent different campaigns.
+Untagged rows with an empty referrer are shown as Direct / internal. Tagged
+rows keep their recorded UTM source.
+These are per-row visitor counts and should not be summed into the overview.
+Empty reports have their own messages. A failed report leaves other successful
+sections visible, and each section reports its own data caveats.
+
+Opening the page or changing its range makes four server-side reads: overview,
+timeseries, pages, and sources. All reuse one requested interval and timezone.
+Revalidation first reads site metadata and refreshes the installation
 snapshot. There is no polling, automatic retry, or shared analytics cache. The
 private admin route requires `plugins:manage` and EmDash's CSRF protection.
 
@@ -152,14 +164,17 @@ manual tracker URL overrides.
 
 ## Current limitations
 
-- The overview is intentionally small: no top pages, sources, sessions, funnels,
-  revenue, visitor profiles, editor analytics, or realtime polling.
+- The summary is intentionally small: no pagination, custom filters, geography,
+  devices, sessions browser, individual visitors, custom-event reports, funnels,
+  revenue, web vitals, editor analytics, or realtime polling. OAuth and account
+  or site creation are also outside this plugin's current scope.
 - Revalidate after tracker rotation or a collector URL change. Saved installation
   metadata has no automatic expiry; private-key revocation is detected on validation.
 - Static pages receive the snapshot available when they are rendered. Rebuild
   those pages after changing the connection or tracking switch.
 - The tracker independently fetches OpenAnalytics's browser configuration. A
-  suspended site may validate successfully; ingestion follows OpenAnalytics policy.
+  suspended site may validate successfully and still have its tracker installed;
+  collection and analytics access follow OpenAnalytics's suspension policy.
 - Duplicate protection covers EmDash fragments in a placement. Remove any tracker
   tag already installed manually in the theme.
 
@@ -172,6 +187,11 @@ pnpm check
 
 `check` runs typechecking, linting, formatting checks, tests, build, and package
 verification. CI runs the same checks. No npm publication is performed.
+
+Run `pnpm exec playwright install chromium`, then `pnpm screenshot` to generate
+three screenshots from a local EmDash admin instance using synthetic analytics.
+See the [demo instructions](demo/README.md) for the authentication, fixture,
+artifact safety checks, and screenshot locations. CI also runs this workflow.
 
 Source boundaries are the native plugin entry, settings/configuration, the
 server-side OpenAnalytics client, saved connection state, tracker fragments,
