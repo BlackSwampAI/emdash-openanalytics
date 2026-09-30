@@ -86,4 +86,4 @@ size. EmDash PR #3 packs to **about 23.7 kB** (decimal), compared with
 Its package includes compiled workflow operations, source maps, and icons; the
 EmDash package includes the compiled plugin, declarations, README, and two
 contract/footprint documents. Package size reflects those different contents.
-The current 0.1.0 release candidate packs to approximately **26.3 kB** (decimal).
+The current 0.1.0 release candidate packs to approximately **26.5 kB** (decimal).

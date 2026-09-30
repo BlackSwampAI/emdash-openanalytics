@@ -54,6 +54,11 @@ Thus a normal rename from `BlackSwampAI/emdash-openanalytics` to
 `BlackSwampAI/emdash-plugin-openanalytics` preserves ordinary repository and
 git traffic, subject to those stated exceptions.
 
+The repository rename was performed after the release branch was committed and
+pushed. Both the old and new GitHub API paths resolve to repository ID
+`1396756742` and the canonical name `BlackSwampAI/emdash-plugin-openanalytics`;
+the old repository path redirects to the renamed repository.
+
 Inspected on 2026-09-29 before implementation:
 
 - EmDash [`54209bc9bd0b48e12bdefa8ac971da01ced7990f`](https://github.com/emdash-cms/emdash/tree/54209bc9bd0b48e12bdefa8ac971da01ced7990f),

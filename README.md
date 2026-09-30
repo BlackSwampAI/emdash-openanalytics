@@ -79,8 +79,8 @@ render the tracker. See [EmDash's page fragment guide](https://docs.emdashcms.co
 
 These captures use real EmDash with synthetic analytics data.
 
-![OpenAnalytics overview in EmDash](https://raw.githubusercontent.com/BlackSwampAI/emdash-plugin-openanalytics/main/docs/screenshots/openanalytics-overview.png)
-![OpenAnalytics pages and traffic sources](https://raw.githubusercontent.com/BlackSwampAI/emdash-plugin-openanalytics/main/docs/screenshots/openanalytics-reports.png)
+![OpenAnalytics overview in EmDash](https://raw.githubusercontent.com/BlackSwampAI/emdash-plugin-openanalytics/dc749d963a528a0f2658380e764a99503eedf95c/docs/screenshots/openanalytics-overview.png)
+![OpenAnalytics pages and traffic sources](https://raw.githubusercontent.com/BlackSwampAI/emdash-plugin-openanalytics/dc749d963a528a0f2658380e764a99503eedf95c/docs/screenshots/openanalytics-reports.png)
 
 ## Analytics overview
 
