@@ -1,5 +1,59 @@
 # Verified upstream contracts
 
+## Release naming and current native-plugin contract (2026-09-29)
+
+Before the release naming change, I rechecked the current EmDash upstream
+`main` ref with `git ls-remote`: `54209bc9bd0b48e12bdefa8ac971da01ced7990f`.
+This is the pinned upstream revision for the release-convention check. A direct
+source clone was unavailable, so I used GitHub's public API to read the relevant
+source files at this exact commit.
+
+The current [native plugin distribution guide](https://docs.emdashcms.com/plugins/creating-native-plugins/distributing/)
+explicitly says `definePlugin()` accepts a simple unscoped ID of lowercase
+letters, digits, and hyphens, and recommends that form because an ID occupies
+one route path segment. It separately shows a scoped npm entrypoint. Therefore
+`@blackswampai/emdash-plugin-openanalytics` as the npm package and `openanalytics`
+as the native plugin ID follow the upstream recommendation; the package scope
+does not need to be repeated in the plugin ID. Current EmDash packages such as
+`@emdash-cms/plugin-audit-log` also use `plugin-` in their package name, while
+the official distribution guide documents that package identity and plugin ID
+are distinct values. No current EmDash technical constraint argues against the
+requested Black Swamp AI package family. At the pinned revision,
+[`packages/plugins/audit-log/package.json`](https://github.com/emdash-cms/emdash/blob/54209bc9bd0b48e12bdefa8ac971da01ced7990f/packages/plugins/audit-log/package.json)
+is named `@emdash-cms/plugin-audit-log`; the native Color example uses
+`id: "color"` in
+[`packages/plugins/color/src/index.ts`](https://github.com/emdash-cms/emdash/blob/54209bc9bd0b48e12bdefa8ac971da01ced7990f/packages/plugins/color/src/index.ts).
+The route-segment recommendation appears in the
+[current native distribution guide](https://docs.emdashcms.com/plugins/creating-native-plugins/distributing/).
+
+The current [native generated-settings documentation](https://docs.emdashcms.com/plugins/creating-native-plugins/react-admin/)
+describes `admin.settingsSchema` as the generated form contract. The [official
+hook reference](https://docs.emdashcms.com/reference/hooks/) documents plugin
+lifecycle, content, media, and public-page hooks; it does not define a settings
+save callback. Likewise, the current [hook guide](https://docs.emdashcms.com/plugins/creating-plugins/hooks/)
+says hooks are declared at plugin definition time, with `content:afterSave`
+being explicitly a content-save hook. There is no documented native settings
+`afterSave`/`onSave` extension point to validate credentials after a generated
+settings form save. The pinned handler source,
+[`packages/core/src/api/handlers/plugin-settings.ts`](https://github.com/emdash-cms/emdash/blob/54209bc9bd0b48e12bdefa8ac971da01ced7990f/packages/core/src/api/handlers/plugin-settings.ts),
+shows `handlePluginSettingsUpdate` validating, encrypting, transactionally
+writing, and reading back declared keys; it takes no plugin callback and
+dispatches no settings lifecycle event. Settings are namespaced as
+`plugin:{pluginId}:settings:{key}` in
+[`packages/core/src/plugins/settings.ts`](https://github.com/emdash-cms/emdash/blob/54209bc9bd0b48e12bdefa8ac971da01ced7990f/packages/core/src/plugins/settings.ts).
+Connection establishment therefore belongs in the authenticated plugin admin
+page flow, rather than relying on undocumented host internals.
+
+GitHub's current [repository rename documentation](https://docs.github.com/en/repositories/creating-and-managing-repositories/renaming-a-repository)
+confirms that ordinary web URLs and `git clone`, `git fetch`, and `git push`
+requests to the old repository location redirect after a rename. Project Pages
+URLs are the exception; GitHub Actions hosted from a renamed repository also do
+not redirect. The documented conditions include having organization-owner or
+repository-admin permission and not recreating a repository under the old name.
+Thus a normal rename from `BlackSwampAI/emdash-openanalytics` to
+`BlackSwampAI/emdash-plugin-openanalytics` preserves ordinary repository and
+git traffic, subject to those stated exceptions.
+
 Inspected on 2026-09-29 before implementation:
 
 - EmDash [`54209bc9bd0b48e12bdefa8ac971da01ced7990f`](https://github.com/emdash-cms/emdash/tree/54209bc9bd0b48e12bdefa8ac971da01ced7990f),

@@ -1,4 +1,4 @@
-# @blackswampai/emdash-openanalytics
+# @blackswampai/emdash-plugin-openanalytics
 
 Native EmDash CMS integration for OpenAnalytics, by Black Swamp AI.
 
@@ -7,20 +7,30 @@ overview inside EmDash. The admin page uses EmDash Block Kit controls, metric
 cards, notices, a timeseries chart, Top Pages, and Traffic Sources. Private
 credentials stay on the server.
 
-## Installation
+## Quick start
 
 Requires EmDash 1.0.1 or later in the 1.x series and Node.js 22.16 or later.
-This package has not been published to npm. For local testing, run `pnpm install`
-and `pnpm build` in this checkout, then install it from your EmDash site:
+
+1. Run `pnpm add @blackswampai/emdash-plugin-openanalytics` in your EmDash site.
+2. Register `openAnalytics()` in the EmDash `plugins` array in `astro.config.mjs`.
+3. Ensure your public layout renders `<EmDashHead page={page} />` inside `<head>`.
+4. Deploy the site and set `EMDASH_ENCRYPTION_KEY` on its server.
+5. Create an OpenAnalytics private read key and save it in this plugin's settings.
+6. Open **OpenAnalytics** in plugin navigation; it validates once automatically,
+   then loads the overview. Revisit or choose a date range to see reports.
+
+## Install
+
+Install the package after the first public npm release is available:
+
+> **No OpenAnalytics credential is needed to install or register this plugin.**
+> **Do not put your `oa_sk_...` private read key in the npm install command,
+> `astro.config.mjs`, or source code.** Add it after installation through
+> OpenAnalytics plugin settings in EmDash. EmDash encrypts secret settings using
+> `EMDASH_ENCRYPTION_KEY`. Keep it out of browser code and public environment variables.
 
 ```sh
-pnpm add /path/to/emdash-openanalytics
-```
-
-After an npm release is published, the installation command will be:
-
-```sh
-pnpm add @blackswampai/emdash-openanalytics
+pnpm add @blackswampai/emdash-plugin-openanalytics
 ```
 
 Register the native plugin in `astro.config.mjs`:
@@ -28,7 +38,7 @@ Register the native plugin in `astro.config.mjs`:
 ```js
 import { defineConfig } from "astro/config";
 import emdash from "emdash/astro";
-import { openAnalytics } from "@blackswampai/emdash-openanalytics";
+import { openAnalytics } from "@blackswampai/emdash-plugin-openanalytics";
 
 export default defineConfig({
 	integrations: [
@@ -48,37 +58,29 @@ a context created with `createPublicPageContext` from `emdash/page`.
 Import `EmDashHead` from `emdash/ui`. Layouts without that insertion point cannot
 render the tracker. See [EmDash's page fragment guide](https://docs.emdashcms.com/plugins/creating-native-plugins/page-fragments/).
 
-## OpenAnalytics setup
+## Configure
 
-1. Create a **private read key** in OpenAnalytics for the site you want to track.
-   Request `site:read` and `analytics:read`. Connection validation uses `site:read`;
-   the admin overview uses `analytics:read`.
-   Older keys may only have `site:read`; site validation cannot verify the extra scope.
-2. Configure `EMDASH_ENCRYPTION_KEY` on the EmDash server **before saving a key**.
-   Follow [EmDash's secrets and key management guide](https://docs.emdashcms.com/deployment/secrets/).
-3. Open **Plugins**, then the settings control for this plugin. Save the API URL,
-   private read key, tracking switch, and analytics timezone. Set the timezone
-   to your site's IANA timezone, such as `America/New_York`. It defaults to UTC;
-   EmDash's native plugin context does not expose the host site's timezone.
-   Tracking defaults to enabled, but no tracker appears before successful validation.
-4. Open **OpenAnalytics** in EmDash's plugin navigation and click **Validate connection**.
-   The page shows the connected site, tracking readiness, API URL, and last
-   validation time. Use **Revalidate connection** after rotating tracker settings.
+1. Set `EMDASH_ENCRYPTION_KEY` on the EmDash server before saving a secret. See
+   [EmDash's secrets and key management guide](https://docs.emdashcms.com/deployment/secrets/).
+2. In OpenAnalytics, create a private read key with `site:read` and `analytics:read`.
+   The first scope validates the site; the second allows the overview and reports.
+3. In EmDash, open **Plugins** and the OpenAnalytics settings. Set the API URL,
+   private read key, tracking switch, and IANA analytics timezone (for example,
+   `America/New_York`; the default is UTC). Save settings.
+4. Open **OpenAnalytics** in plugin navigation. With no matching saved snapshot,
+   the page validates once and then loads the overview. It shows the connected
+   site, tracking readiness, API URL, and last validation time.
+5. If automatic validation fails, use **Retry connection**. The same failed
+   configuration will not trigger another automatic attempt. Changing settings
+   permits a fresh attempt. For an established connection, **Refresh connection**
+   validates separately from the date range control.
 
-The existing protected validation route also remains available to administrators:
+## Screenshots
 
-```js
-const response = await fetch("/_emdash/api/plugins/emdash-openanalytics/validate-connection", {
-	method: "POST",
-	headers: { "X-EmDash-Request": "1" },
-});
-console.log(await response.json());
-```
+These captures use real EmDash with synthetic analytics data.
 
-The route requires `plugins:manage`. It reads the stored credential on the server;
-you do not pass the key in this request. EmDash wraps the plugin's result in its
-standard API response envelope. Connection failures contain safe error details.
-Successful validation reports site identity, status, and tracker readiness.
+![OpenAnalytics overview in EmDash](https://raw.githubusercontent.com/BlackSwampAI/emdash-plugin-openanalytics/main/docs/screenshots/openanalytics-overview.png)
+![OpenAnalytics pages and traffic sources](https://raw.githubusercontent.com/BlackSwampAI/emdash-plugin-openanalytics/main/docs/screenshots/openanalytics-reports.png)
 
 ## Analytics overview
 
@@ -136,19 +138,25 @@ API URL or credential.
 
 ## Security
 
-`oa_sk_…` is private and server-only. EmDash's `secret` setting encrypts it at
+`oa_sk_…` is private and server-only. Never put it in `astro.config.mjs`, source
+code, browser code, or public environment variables. Enter it only in the
+OpenAnalytics plugin settings after configuring the host's `EMDASH_ENCRYPTION_KEY`.
+EmDash's `secret` setting encrypts it at
 rest and presents a write-only admin input; the plugin never puts it in public
 HTML, validation results, or logs. Keep the EmDash encryption key available and
 back it up according to the host's secret management practices.
 
-`oa_pk_…` is the public browser tracking key. It belongs in page HTML. The plugin
+`oa_pk_…` is the public browser tracking key. The plugin retrieves it
+automatically from OpenAnalytics and puts it in page HTML. The plugin
 uses EmDash's structured external-script fragment, which escapes attributes and
 deduplicates the tracker by a stable fragment key.
 
 The API client rejects redirects and uses a five-second timeout. API response
 bodies and transport exceptions are not echoed into errors. The administrator
 controls the API and tracker origins: configure endpoints you trust. HTTP works
-for local self-hosted deployments; use HTTPS for production credentials.
+for local self-hosted deployments. With a remote HTTP endpoint, the private key
+travels without encryption; use HTTPS in production. The admin page warns when
+the configured API URL uses remote HTTP.
 
 ## Self-hosting
 
@@ -159,7 +167,7 @@ it has no hard-coded hosted tracker or collector URL.
 
 If any installation field is `null`, the connection can still validate, but no
 script is emitted. Configure your OpenAnalytics deployment's `COLLECTOR_BASE_URL`
-and a live public tracking key, then validate again. This scaffold does not add
+and a live public tracking key, then validate again. The plugin does not add
 manual tracker URL overrides.
 
 ## Current limitations
@@ -168,8 +176,10 @@ manual tracker URL overrides.
   devices, sessions browser, individual visitors, custom-event reports, funnels,
   revenue, web vitals, editor analytics, or realtime polling. OAuth and account
   or site creation are also outside this plugin's current scope.
-- Revalidate after tracker rotation or a collector URL change. Saved installation
+- Refresh the connection after tracker rotation or a collector URL change. Saved installation
   metadata has no automatic expiry; private-key revocation is detected on validation.
+- Pre-release installations using the old `emdash-openanalytics` plugin ID must
+  re-enter their OpenAnalytics settings once after updating.
 - Static pages receive the snapshot available when they are rendered. Rebuild
   those pages after changing the connection or tracking switch.
 - The tracker independently fetches OpenAnalytics's browser configuration. A

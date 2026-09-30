@@ -221,44 +221,48 @@ try {
 		);
 	});
 	await getSession(page);
-	const headers = { "X-EmDash-Request": "1", "Content-Type": "application/json", Origin: BASE };
-	const settings = await page.request.put(
-		`${BASE}/_emdash/api/admin/plugins/emdash-openanalytics/settings`,
-		{
-			headers,
-			data: {
-				values: {
-					apiUrl: FIXTURE_BASE,
-					privateReadKey: SYNTHETIC_KEY,
-					trackingEnabled: true,
-					timezone: "America/New_York",
-				},
-			},
-		},
+	await page.goto(`${BASE}/_emdash/admin/plugins/openanalytics/analytics`);
+	await page.getByText("Not configured", { exact: true }).waitFor({ state: "visible" });
+	if (await page.getByRole("button", { name: /(?:Refresh|Retry) connection/ }).count())
+		throw new Error("Blank settings must not offer connection maintenance.");
+	assertNoSecret(await page.content(), "blank-settings admin HTML");
+	await page.goto(`${BASE}/_emdash/admin/plugins-manager/openanalytics/settings`);
+	await page.getByLabel("OpenAnalytics API URL", { exact: true }).fill(FIXTURE_BASE);
+	await page.getByLabel("Private read key", { exact: true }).fill(SYNTHETIC_KEY);
+	await page.getByLabel("Analytics timezone", { exact: true }).fill("America/New_York");
+	const trackingSwitch = page.getByRole("switch", { name: "Enable tracking", exact: true });
+	if ((await trackingSwitch.getAttribute("aria-checked")) !== "true") await trackingSwitch.click();
+	const settingsSaved = page.waitForResponse(
+		(response) =>
+			response.url() === `${BASE}/_emdash/api/admin/plugins/openanalytics/settings` &&
+			response.request().method() === "PUT",
 	);
-	await requireOk(settings, "seed synthetic plugin settings");
-	const validation = await page.request.post(
-		`${BASE}/_emdash/api/plugins/emdash-openanalytics/validate-connection`,
-		{
-			headers,
-			data: {},
-		},
-	);
-	const validationJson = await requireOk(validation, "validate fixture connection");
-	const validationResult = validationJson.data ?? validationJson;
-	if (validationResult.success !== true)
-		throw new Error("The fixture connection did not validate successfully.");
+	await page.getByRole("button", { name: "Save Settings", exact: true }).first().click();
+	await requireOk(await settingsSaved, "save synthetic plugin settings through the native form");
+	await page
+		.getByText("Settings saved successfully", { exact: true })
+		.waitFor({ state: "visible" });
+	const beforeNavigation = await (await fetch(`${FIXTURE_BASE}/__requests`)).json();
+	if (beforeNavigation.length !== 0)
+		throw new Error("Saving settings unexpectedly called OpenAnalytics.");
 
 	const requested = [];
 	page.on("request", (request) => {
-		if (request.url().includes("/_emdash/api/plugins/emdash-openanalytics"))
-			requested.push(request.url());
+		if (request.url().includes("/_emdash/api/plugins/openanalytics")) requested.push(request.url());
 	});
-	await page.goto(`${BASE}/_emdash/admin/plugins/emdash-openanalytics/analytics`);
+	await page.goto(`${BASE}/_emdash/admin/plugins/openanalytics/analytics`);
 	await page.locator("text=Top Pages").waitFor({ state: "visible", timeout: 30_000 });
 	await page.locator("text=Traffic Sources").waitFor({ state: "visible", timeout: 30_000 });
 	await page.getByText("1284", { exact: true }).waitFor({ state: "visible" });
 	await page.getByText("EmDash Demo", { exact: true }).waitFor({ state: "visible" });
+	await page.getByText("Connected", { exact: true }).waitFor({ state: "visible" });
+	const refresh = page.getByRole("button", { name: "Refresh connection", exact: true });
+	await refresh.waitFor({ state: "visible" });
+	const range = page.getByText("Date range", { exact: true });
+	const refreshBounds = await refresh.boundingBox();
+	const rangeBounds = await range.boundingBox();
+	if (!refreshBounds || !rangeBounds || refreshBounds.y + refreshBounds.height >= rangeBounds.y)
+		throw new Error("Connection maintenance must appear above the independent date range control.");
 	await page.locator("canvas").first().waitFor({ state: "visible", timeout: 30_000 });
 	await waitForStableChart(page);
 	await Promise.all(responseScans);
@@ -272,6 +276,10 @@ try {
 	for (const line of childLogs) assertNoSecret(line, "demo process logs");
 	const readLogResponse = await fetch(`${FIXTURE_BASE}/__requests`);
 	const readLog = await readLogResponse.json();
+	if (readLog.filter(({ path }) => path === "/v1/read/site").length !== 1)
+		throw new Error("The first admin load must validate the connection exactly once.");
+	if (requested.some((url) => url.includes("/validate-connection")))
+		throw new Error("The screenshot setup must not explicitly validate the connection.");
 	const analyticsReads = readLog.filter((item) => item.path.startsWith("/v1/read/analytics/"));
 	const relevant = [
 		"/v1/read/analytics/overview",
@@ -289,6 +297,14 @@ try {
 	}
 	if (new Set(analyticsReads.map(({ from, to }) => `${from}|${to}`)).size !== 1)
 		throw new Error("Overview and report calls did not share one selected range.");
+	// A matching snapshot must survive an ordinary revisit without another site read.
+	await page.reload();
+	await page.getByText("Connected", { exact: true }).waitFor({ state: "visible" });
+	await page.getByText("1284", { exact: true }).waitFor({ state: "visible" });
+	await waitForStableChart(page);
+	const revisitReads = await (await fetch(`${FIXTURE_BASE}/__requests`)).json();
+	if (revisitReads.filter(({ path }) => path === "/v1/read/site").length !== 1)
+		throw new Error("An ordinary page revisit revalidated a matching snapshot.");
 	await mkdir(staging, { recursive: true });
 	await waitForStableChart(page);
 	await page.screenshot({ path: join(staging, "openanalytics-overview.png"), fullPage: false });

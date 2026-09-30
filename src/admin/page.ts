@@ -23,6 +23,8 @@ type Input =
 	| { type: "page_load"; page: string }
 	| { type: "block_action"; action_id: string; value?: unknown; page?: string };
 
+const VALIDATION_FAILURE_KEY = "state:admin-validation-failure";
+
 function record(value: unknown): value is Record<string, unknown> {
 	return !!value && typeof value === "object" && !Array.isArray(value);
 }
@@ -42,12 +44,18 @@ function parseInput(value: unknown): Input | null {
 
 function safeError(kind: unknown, retryAfterSeconds?: number): string {
 	switch (kind) {
+		case "configuration":
+			return "The OpenAnalytics API URL or private read key is invalid. Review plugin settings.";
 		case "analytics_forbidden":
 			return "This private key does not have analytics:read permission.";
 		case "suspended":
 			return "This OpenAnalytics site is suspended, so analytics data is unavailable.";
 		case "unauthorized":
-			return "OpenAnalytics rejected this credential. Revalidate with a current private read key.";
+			return "OpenAnalytics rejected this credential. Update the private read key in plugin settings, then retry the connection.";
+		case "not_found":
+			return "No OpenAnalytics site was found for this private read key. Check the key and site configuration.";
+		case "invalid_response":
+			return "OpenAnalytics returned an invalid connection response. Retry the connection shortly.";
 		case "forbidden":
 			return "This private key does not have permission to read OpenAnalytics data.";
 		case "billing":
@@ -65,7 +73,7 @@ function safeError(kind: unknown, retryAfterSeconds?: number): string {
 		case "server":
 			return "OpenAnalytics is temporarily unavailable. Try again shortly.";
 		default:
-			return "OpenAnalytics could not load analytics. Revalidate the connection or try again shortly.";
+			return "OpenAnalytics could not load analytics. Refresh the connection or try again shortly.";
 	}
 }
 
@@ -82,6 +90,7 @@ function waitingPage(
 	message: string,
 	needsValidation = true,
 	notConfigured = false,
+	connectionAction?: { id: "revalidate" | "retry"; label: string },
 ): BlockResponse {
 	return {
 		blocks: [
@@ -92,11 +101,12 @@ function waitingPage(
 				needsValidation,
 				notConfigured,
 				error: needsValidation || notConfigured ? undefined : message,
+				connectionAction: connectionAction
+					? { ...connectionAction, value: { range: selected } }
+					: undefined,
 			}),
-			controls(selected, {
-				validate: notConfigured || (needsValidation && message.startsWith("Validate")),
-			}),
-			...(needsValidation ? [{ type: "context" as const, text: message }] : []),
+			controls(selected),
+			...(needsValidation || notConfigured ? [{ type: "context" as const, text: message }] : []),
 		],
 	};
 }
@@ -150,9 +160,14 @@ async function loadAnalytics(
 			site,
 			trackingEnabled,
 			validatedAt: snapshot.validatedAt,
+			connectionAction: {
+				id: "revalidate",
+				label: "Refresh connection",
+				value: { range: selected },
+			},
 		}),
-		controls(selected, { retry: failures }),
 		{ type: "header", text: rangeLabel(selected) },
+		controls(selected, { retry: failures }),
 		...renderOverview({
 			timezone,
 			overview,
@@ -229,17 +244,21 @@ export async function renderAdminPage(ctx: RouteContext): Promise<BlockResponse>
 	}
 	const { timezone, error: timezoneError } = timezoneFromSetting(timezoneValue);
 	let validationError: string | null = null;
+	const fingerprint = await configurationFingerprint(config.apiUrl, config.readKey);
+	let snapshot = await ctx.kv.get<unknown>(SITE_SNAPSHOT_KEY);
+	const matchingSnapshot = () => isSiteSnapshot(snapshot) && snapshot.fingerprint === fingerprint;
 	if (interaction.type === "block_action" && interaction.action_id === "revalidate") {
+		await ctx.kv.delete(VALIDATION_FAILURE_KEY).catch(() => undefined);
 		const validation = await validateConnection(ctx);
 		if (!validation.success) {
 			validationError = safeError(
 				validation.error.kind,
 				"retryAfterSeconds" in validation.error ? validation.error.retryAfterSeconds : undefined,
 			);
+			await ctx.kv.set(VALIDATION_FAILURE_KEY, { fingerprint, message: validationError });
 		}
+		snapshot = await ctx.kv.get<unknown>(SITE_SNAPSHOT_KEY);
 	}
-	const fingerprint = await configurationFingerprint(config.apiUrl, config.readKey);
-	const snapshot = await ctx.kv.get<unknown>(SITE_SNAPSHOT_KEY);
 	if (validationError) {
 		if (isSiteSnapshot(snapshot) && snapshot.fingerprint === fingerprint) {
 			return {
@@ -250,6 +269,11 @@ export async function renderAdminPage(ctx: RouteContext): Promise<BlockResponse>
 						site: safeConnectionSummary(snapshot.site),
 						trackingEnabled,
 						validatedAt: snapshot.validatedAt,
+						connectionAction: {
+							id: "revalidate",
+							label: "Retry connection",
+							value: { range: selected },
+						},
 					}),
 					controls(selected),
 					{
@@ -261,7 +285,33 @@ export async function renderAdminPage(ctx: RouteContext): Promise<BlockResponse>
 				],
 			};
 		}
-		return waitingPage(selected, config.apiUrl, trackingEnabled, validationError, false);
+		return waitingPage(selected, config.apiUrl, trackingEnabled, validationError, false, false, {
+			id: "revalidate",
+			label: "Retry connection",
+		});
+	}
+	const previousFailure = await ctx.kv.get<unknown>(VALIDATION_FAILURE_KEY);
+	const failedState =
+		record(previousFailure) && previousFailure.fingerprint === fingerprint
+			? typeof previousFailure.message === "string"
+				? previousFailure.message
+				: "Connection failed. Try again."
+			: null;
+	if (!matchingSnapshot() && interaction.type === "page_load" && !failedState) {
+		const validation = await validateConnection(ctx);
+		if (validation.success) {
+			snapshot = await ctx.kv.get<unknown>(SITE_SNAPSHOT_KEY);
+		} else {
+			validationError = safeError(
+				validation.error.kind,
+				"retryAfterSeconds" in validation.error ? validation.error.retryAfterSeconds : undefined,
+			);
+			await ctx.kv.set(VALIDATION_FAILURE_KEY, { fingerprint, message: validationError });
+			return waitingPage(selected, config.apiUrl, trackingEnabled, validationError, false, false, {
+				id: "revalidate",
+				label: "Retry connection",
+			});
+		}
 	}
 	if (timezoneError) {
 		return {
@@ -273,6 +323,11 @@ export async function renderAdminPage(ctx: RouteContext): Promise<BlockResponse>
 							site: safeConnectionSummary(snapshot.site),
 							trackingEnabled,
 							validatedAt: snapshot.validatedAt,
+							connectionAction: {
+								id: "revalidate",
+								label: "Refresh connection",
+								value: { range: selected },
+							},
 						})
 					: connectionBlocks({ apiUrl: config.apiUrl, trackingEnabled, needsValidation: true })),
 				controls(selected),
@@ -286,13 +341,18 @@ export async function renderAdminPage(ctx: RouteContext): Promise<BlockResponse>
 		};
 	}
 	if (!isSiteSnapshot(snapshot) || snapshot.fingerprint !== fingerprint) {
+		if (failedState)
+			return waitingPage(selected, config.apiUrl, trackingEnabled, failedState, false, false, {
+				id: "revalidate",
+				label: "Retry connection",
+			});
 		return waitingPage(
 			selected,
 			config.apiUrl,
 			trackingEnabled,
 			isSiteSnapshot(snapshot)
-				? "Configuration changed. Revalidate the connection to resume tracking and load analytics."
-				: "Validate the connection to load analytics.",
+				? "Configuration changed. Open this page to validate the connection and resume tracking."
+				: "Open this page to validate the connection and load analytics.",
 		);
 	}
 	return loadAnalytics(config, snapshot, selected, timezone, trackingEnabled);

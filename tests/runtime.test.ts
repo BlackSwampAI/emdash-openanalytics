@@ -20,7 +20,7 @@ const PRIVATE_KEY = "oa_sk_test-credential-must-stay-server-side";
 const ENCRYPTION_KEY = `emdash_enc_v1_${Buffer.alloc(32, 11).toString("base64url")}`;
 
 async function makeRuntime() {
-	const directory = mkdtempSync(join(tmpdir(), "emdash-openanalytics-test-"));
+	const directory = mkdtempSync(join(tmpdir(), "openanalytics-test-"));
 	const databasePath = join(directory, "test.sqlite");
 	const dependencies = {
 		config: {
@@ -88,7 +88,7 @@ describe("OpenAnalytics native EmDash runtime", () => {
 	it("fails closed when EmDash has no plugin secret encryption key", async () => {
 		vi.stubEnv("EMDASH_ENCRYPTION_KEY", "");
 		const runtime = await makeRuntime();
-		const plugin = runtime.configuredPlugins.find(({ id }) => id === "emdash-openanalytics");
+		const plugin = runtime.configuredPlugins.find(({ id }) => id === "openanalytics");
 		if (!plugin?.admin?.settingsSchema)
 			throw new Error("OpenAnalytics settings schema was not registered");
 
@@ -115,7 +115,7 @@ describe("OpenAnalytics native EmDash runtime", () => {
 	it("stores the secret encrypted, requires admin permission, validates the site, then renders its tracker", async () => {
 		vi.stubEnv("EMDASH_ENCRYPTION_KEY", ENCRYPTION_KEY);
 		const runtime = await makeRuntime();
-		const plugin = runtime.configuredPlugins.find(({ id }) => id === "emdash-openanalytics");
+		const plugin = runtime.configuredPlugins.find(({ id }) => id === "openanalytics");
 		expect(plugin).toBeDefined();
 		if (!plugin) return;
 		const schema = plugin.admin?.settingsSchema;
@@ -347,7 +347,7 @@ describe("OpenAnalytics native EmDash runtime", () => {
 
 	it("never calls OpenAnalytics for EmDash admin URLs", async () => {
 		const runtime = await makeRuntime();
-		const plugin = runtime.configuredPlugins.find(({ id }) => id === "emdash-openanalytics");
+		const plugin = runtime.configuredPlugins.find(({ id }) => id === "openanalytics");
 		if (!plugin) throw new Error("OpenAnalytics plugin was not registered");
 		const fetchSpy = vi.fn();
 		vi.stubGlobal("fetch", fetchSpy);

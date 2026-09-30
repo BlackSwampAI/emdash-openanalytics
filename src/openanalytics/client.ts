@@ -22,6 +22,7 @@ const SITE_STATUSES = new Set(["active", "suspended", "deleting", "deleted"]);
 const RESOLUTIONS = new Set(["minute", "hour", "day", "week"]);
 const FRESHNESS_STATES = new Set(["ok", "no_data", "stale", "degraded"]);
 const ISO_UTC_INSTANT = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z$/;
+const MAX_RESPONSE_BYTES = 1_048_576;
 
 export function containsPrivateKey(value: unknown, seen = new Set<object>()): boolean {
 	if (typeof value === "string") {
@@ -254,7 +255,7 @@ async function getJSON(
 			let payload: unknown;
 			if (query && (response.status === 400 || response.status === 403)) {
 				try {
-					payload = await response.json();
+					payload = await readJsonResponse(response);
 				} catch {
 					if (controller.signal.aborted) throw new OpenAnalyticsError("timeout");
 				}
@@ -264,7 +265,7 @@ async function getJSON(
 				: errorForStatus(response.status, response.headers.get("retry-after"));
 		}
 		try {
-			return await response.json();
+			return await readJsonResponse(response);
 		} catch {
 			if (controller.signal.aborted) throw new OpenAnalyticsError("timeout");
 			throw new OpenAnalyticsError("invalid_response");
@@ -275,6 +276,48 @@ async function getJSON(
 		throw new OpenAnalyticsError("network");
 	} finally {
 		clearTimeout(timeout);
+	}
+}
+
+/** Bound upstream payload memory use before parsing untrusted JSON. */
+async function readJsonResponse(response: Response): Promise<unknown> {
+	const declaredLength = response.headers.get("content-length");
+	if (
+		declaredLength &&
+		/^\d+$/.test(declaredLength) &&
+		Number(declaredLength) > MAX_RESPONSE_BYTES
+	) {
+		await response.body?.cancel();
+		throw new OpenAnalyticsError("invalid_response");
+	}
+	if (!response.body) throw new OpenAnalyticsError("invalid_response");
+	const reader = response.body.getReader();
+	const chunks: Uint8Array[] = [];
+	let total = 0;
+	try {
+		while (true) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			total += value.byteLength;
+			if (total > MAX_RESPONSE_BYTES) {
+				await reader.cancel();
+				throw new OpenAnalyticsError("invalid_response");
+			}
+			chunks.push(value);
+		}
+	} finally {
+		reader.releaseLock();
+	}
+	const bytes = new Uint8Array(total);
+	let offset = 0;
+	for (const chunk of chunks) {
+		bytes.set(chunk, offset);
+		offset += chunk.byteLength;
+	}
+	try {
+		return JSON.parse(new TextDecoder().decode(bytes));
+	} catch {
+		throw new OpenAnalyticsError("invalid_response");
 	}
 }
 

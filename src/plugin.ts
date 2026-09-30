@@ -7,7 +7,7 @@ import { trackingFragment } from "./tracking/fragment";
 
 export function createPlugin() {
 	return definePlugin({
-		id: "emdash-openanalytics",
+		id: "openanalytics",
 		version: "0.1.0",
 		capabilities: ["hooks.page-fragments:register"],
 		admin: {
@@ -24,6 +24,7 @@ export function createPlugin() {
 			"validate-connection": {
 				methods: ["POST"],
 				permission: "plugins:manage",
+				request: { body: "bytes", maxBytes: 4_096 },
 				handler: validateConnection,
 			},
 		},

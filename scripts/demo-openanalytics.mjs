@@ -52,7 +52,7 @@ const server = createServer((req, res) => {
 		return send(res, 401, { error: { code: "UNAUTHORIZED", message: "fixture auth required" } });
 	if (req.method !== "GET") return send(res, 405, { error: { code: "METHOD_NOT_ALLOWED" } });
 	const path = new URL(req.url ?? "/", `http://127.0.0.1:${PORT}`).pathname;
-	if (path.startsWith("/v1/read/analytics/")) {
+	if (path === "/v1/read/site" || path.startsWith("/v1/read/analytics/")) {
 		const url = new URL(req.url ?? "/", `http://127.0.0.1:${PORT}`);
 		observedReads.push({
 			path,

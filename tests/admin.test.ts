@@ -16,7 +16,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createPlugin } from "../src/plugin";
 
 const runtimes: Array<{ runtime: EmDashRuntime; directory: string }> = [];
-const pluginId = "emdash-openanalytics";
+const pluginId = "openanalytics";
 const privateKey = "oa_sk_admin_test_private_key";
 const encryptionKey = `emdash_enc_v1_${Buffer.alloc(32, 12).toString("base64url")}`;
 const apiUrl = "https://api.openanalytics.test";
@@ -51,7 +51,7 @@ const responseMeta = () => {
 
 async function makeRuntime() {
 	vi.stubEnv("EMDASH_ENCRYPTION_KEY", encryptionKey);
-	const directory = mkdtempSync(join(tmpdir(), "emdash-openanalytics-admin-test-"));
+	const directory = mkdtempSync(join(tmpdir(), "openanalytics-admin-test-"));
 	const runtime = await EmDashRuntime.create({
 		config: {
 			database: {
@@ -312,7 +312,7 @@ async function renderedTracking(runtime: EmDashRuntime) {
 
 async function validate(
 	runtime: EmDashRuntime,
-	options: { role?: number; tokenScopes?: string[] } = {},
+	options: { role?: number; tokenScopes?: string[]; body?: string; contentLength?: boolean } = {},
 ) {
 	const response = await dispatchPluginApiRequest({
 		runtime,
@@ -320,6 +320,10 @@ async function validate(
 		path: "validate-connection",
 		request: new Request(`https://cms.test/_emdash/api/plugins/${pluginId}/validate-connection`, {
 			method: "POST",
+			...(options.body === undefined || options.contentLength !== true
+				? {}
+				: { headers: { "content-length": String(Buffer.byteLength(options.body)) } }),
+			...(options.body === undefined ? {} : { body: options.body }),
 		}),
 		...(options.role === undefined
 			? {}
@@ -402,6 +406,31 @@ describe("OpenAnalytics native admin page", () => {
 		expect(await renderedTracking(runtime)).toContain('data-key="oa_pk_admin_public"');
 	});
 
+	it("bounds standalone validation request bodies before upstream calls", async () => {
+		const runtime = await makeRuntime();
+		const { fetchMock } = installFetch();
+		await setSettings(runtime, { apiUrl, privateReadKey: privateKey });
+		const oversized = await validate(runtime, {
+			role: 50,
+			tokenScopes: ["admin"],
+			body: "x".repeat(5_000),
+			contentLength: true,
+		});
+		expect(oversized.status).toBe(413);
+		expect(fetchMock).not.toHaveBeenCalled();
+		const streamed = await validate(runtime, {
+			role: 50,
+			tokenScopes: ["admin"],
+			body: "x".repeat(5_000),
+		});
+		expect(streamed.status).toBe(413);
+		expect(fetchMock).not.toHaveBeenCalled();
+
+		const emptyBody = await validate(runtime, { role: 50, tokenScopes: ["admin"] });
+		expect(emptyBody.status).toBe(200);
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
+
 	it("requires the protected admin route and rejects CSRF and insufficient roles", async () => {
 		const runtime = await makeRuntime();
 		const { fetchMock } = installFetch();
@@ -454,7 +483,7 @@ describe("OpenAnalytics native admin page", () => {
 		expect(fetchMock).not.toHaveBeenCalled();
 	});
 
-	it("shows not-configured and configuration-changed states without making upstream calls", async () => {
+	it("shows missing configuration without calls and automatically validates changed settings", async () => {
 		const runtime = await makeRuntime();
 		const { fetchMock, requests, failNextSite } = installFetch();
 		const unconfigured = await dispatchAdmin(
@@ -464,6 +493,9 @@ describe("OpenAnalytics native admin page", () => {
 		);
 		expect(unconfigured.response.status).toBe(200);
 		expect(JSON.stringify(unconfigured.data)).toContain("Not configured");
+		expect(JSON.stringify(unconfigured.data)).toContain("private read key");
+		expect(JSON.stringify(unconfigured.data)).not.toContain("Refresh connection");
+		expect(JSON.stringify(unconfigured.data)).not.toContain("Retry connection");
 		expect(fetchMock).not.toHaveBeenCalled();
 
 		await setSettings(runtime, {
@@ -477,14 +509,14 @@ describe("OpenAnalytics native admin page", () => {
 			apiUrl: "https://new-api.openanalytics.test",
 			trackingEnabled: true,
 		});
-		const stale = await dispatchAdmin(
+		const refreshed = await dispatchAdmin(
 			runtime,
 			{ type: "page_load", page: "/analytics" },
 			{ role: 50, tokenScopes: ["admin"] },
 		);
-		expect(JSON.stringify(stale.data)).toContain("Configuration changed");
-		expect(fetchMock).toHaveBeenCalledTimes(1);
-		expect(JSON.stringify(stale.data)).not.toContain(privateKey);
+		expect(JSON.stringify(refreshed.data)).toContain("Connected");
+		expect(fetchMock).toHaveBeenCalledTimes(6);
+		expect(JSON.stringify(refreshed.data)).not.toContain(privateKey);
 		failNextSite("network");
 		const failedRevalidation = await dispatchAdmin(
 			runtime,
@@ -497,14 +529,204 @@ describe("OpenAnalytics native admin page", () => {
 			{ role: 50, tokenScopes: ["admin"] },
 		);
 		expect(JSON.stringify(failedRevalidation.data)).not.toContain(privateKey);
-		const stillStale = await dispatchAdmin(
+		const remainsConnected = await dispatchAdmin(
 			runtime,
 			{ type: "page_load", page: "/analytics" },
 			{ role: 50, tokenScopes: ["admin"] },
 		);
-		expect(JSON.stringify(stillStale.data)).toContain("Validate the connection");
+		expect(JSON.stringify(remainsConnected.data)).toContain("Connected");
+		expect(requests.filter(({ url }) => url.includes("analytics/"))).toHaveLength(8);
+		expect(await renderedTracking(runtime)).toContain('data-key="oa_pk_admin_public"');
+	});
+
+	it("automatically validates once on first page load, then range changes and revisits reuse the snapshot", async () => {
+		const runtime = await makeRuntime();
+		const { requests } = installFetch();
+		await setSettings(runtime, { apiUrl, privateReadKey: privateKey, trackingEnabled: true });
+		const first = await dispatchAdmin(
+			runtime,
+			{ type: "page_load", page: "/analytics" },
+			{
+				role: 50,
+				tokenScopes: ["admin"],
+			},
+		);
+		expect(JSON.stringify(first.data)).toContain("Connected");
+		expect(JSON.stringify(first.data)).toContain("Visitors");
+		const blocks = first.data.blocks ?? [];
+		const connectionButtonIndex = blocks.findIndex(
+			(block) => block.type === "actions" && JSON.stringify(block).includes("Refresh connection"),
+		);
+		const rangeIndex = blocks.findIndex(
+			(block) => block.type === "actions" && JSON.stringify(block).includes('"label":"Date range"'),
+		);
+		expect(connectionButtonIndex).toBeGreaterThan(-1);
+		expect(rangeIndex).toBeGreaterThan(connectionButtonIndex);
+		expect(JSON.stringify(blocks[rangeIndex])).not.toContain("revalidate");
+		expect(requests.filter(({ url }) => url.endsWith("/v1/read/site"))).toHaveLength(1);
+		expect(requests.filter(({ url }) => url.includes("analytics/"))).toHaveLength(4);
+		expect(await renderedTracking(runtime)).toContain('data-key="oa_pk_admin_public"');
+		await dispatchAdmin(
+			runtime,
+			{ type: "block_action", action_id: "range", value: "7d", page: "/analytics" },
+			{
+				role: 50,
+				tokenScopes: ["admin"],
+			},
+		);
+		const afterRange = requests.filter(({ url }) => url.includes("analytics/")).slice(-4);
+		for (const { url } of afterRange) {
+			expect(Date.now() - Date.parse(new URL(url).searchParams.get("from")!)).toBeLessThan(
+				8 * 24 * 60 * 60 * 1000,
+			);
+		}
+		const refresh = await dispatchAdmin(
+			runtime,
+			{ type: "block_action", action_id: "revalidate", value: { range: "7d" }, page: "/analytics" },
+			{ role: 50, tokenScopes: ["admin"] },
+		);
+		expect(JSON.stringify(refresh.data)).toContain("Connected");
+		const afterRefresh = requests.filter(({ url }) => url.includes("analytics/")).slice(-4);
+		for (const { url } of afterRefresh) {
+			expect(Date.now() - Date.parse(new URL(url).searchParams.get("from")!)).toBeLessThan(
+				8 * 24 * 60 * 60 * 1000,
+			);
+		}
+		await dispatchAdmin(
+			runtime,
+			{ type: "page_load", page: "/analytics" },
+			{
+				role: 50,
+				tokenScopes: ["admin"],
+			},
+		);
+		expect(requests.filter(({ url }) => url.endsWith("/v1/read/site"))).toHaveLength(2);
+		expect(requests.filter(({ url }) => url.includes("analytics/"))).toHaveLength(16);
+	});
+
+	it("suppresses a stale tracker on configuration mismatch until the new pair validates", async () => {
+		const runtime = await makeRuntime();
+		const { requests } = installFetch();
+		await setSettings(runtime, { apiUrl, privateReadKey: privateKey, trackingEnabled: true });
+		await validate(runtime, { role: 50, tokenScopes: ["admin"] });
+		expect(await renderedTracking(runtime)).toContain('data-key="oa_pk_admin_public"');
+
+		const changedKey = "oa_sk_admin_test_changed_private_key";
+		await setSettings(runtime, {
+			apiUrl: "https://new-api.openanalytics.test",
+			privateReadKey: changedKey,
+			trackingEnabled: true,
+		});
+		expect(await renderedTracking(runtime)).toBe("");
+		const beforeLoad = requests.length;
+		const page = await dispatchAdmin(
+			runtime,
+			{ type: "page_load", page: "/analytics" },
+			{ role: 50, tokenScopes: ["admin"] },
+		);
+		expect(JSON.stringify(page.data)).toContain("Connected");
+		expect(
+			requests.slice(beforeLoad).filter(({ url }) => url.endsWith("/v1/read/site")),
+		).toHaveLength(1);
+		expect(requests.slice(beforeLoad).filter(({ url }) => url.includes("analytics/"))).toHaveLength(
+			4,
+		);
+		expect(await renderedTracking(runtime)).toContain('data-key="oa_pk_admin_public"');
+	});
+
+	it("does not retry a failed changed configuration until explicit retry, then recovers", async () => {
+		const runtime = await makeRuntime();
+		const { requests, failNextSite } = installFetch();
+		await setSettings(runtime, { apiUrl, privateReadKey: privateKey, trackingEnabled: true });
+		await validate(runtime, { role: 50, tokenScopes: ["admin"] });
+		await setSettings(runtime, {
+			apiUrl: "https://new-api.openanalytics.test",
+			privateReadKey: "oa_sk_admin_test_changed_private_key",
+			trackingEnabled: true,
+		});
+		failNextSite("network");
+		const failed = await dispatchAdmin(
+			runtime,
+			{ type: "page_load", page: "/analytics" },
+			{ role: 50, tokenScopes: ["admin"] },
+		);
+		expect(JSON.stringify(failed.data)).toContain("Retry connection");
+		expect(await renderedTracking(runtime)).toBe("");
+		const afterFailure = requests.length;
+		for (const interaction of [
+			{ type: "page_load", page: "/analytics" },
+			{ type: "block_action", action_id: "range", value: "7d", page: "/analytics" },
+		]) {
+			await dispatchAdmin(runtime, interaction, { role: 50, tokenScopes: ["admin"] });
+		}
+		expect(requests).toHaveLength(afterFailure);
+		expect(await renderedTracking(runtime)).toBe("");
+		const retried = await dispatchAdmin(
+			runtime,
+			{ type: "block_action", action_id: "revalidate", value: { range: "7d" }, page: "/analytics" },
+			{ role: 50, tokenScopes: ["admin"] },
+		);
+		expect(JSON.stringify(retried.data)).toContain("Connected");
+		expect(
+			requests.slice(afterFailure).filter(({ url }) => url.endsWith("/v1/read/site")),
+		).toHaveLength(1);
+		expect(
+			requests.slice(afterFailure).filter(({ url }) => url.includes("analytics/")),
+		).toHaveLength(4);
+		expect(
+			requests
+				.slice(afterFailure)
+				.filter(({ url }) => url.includes("analytics/"))
+				.every(
+					({ url }) =>
+						new URL(url).searchParams.get("from") &&
+						Date.parse(new URL(url).searchParams.get("from")!) >
+							Date.now() - 8 * 24 * 60 * 60 * 1000,
+				),
+		).toBe(true);
+		expect(await renderedTracking(runtime)).toContain('data-key="oa_pk_admin_public"');
+	});
+
+	it("shows a safe retry after automatic validation fails and makes no analytics reads", async () => {
+		const runtime = await makeRuntime();
+		const { requests, failNextSite } = installFetch();
+		await setSettings(runtime, { apiUrl, privateReadKey: privateKey });
+		failNextSite(401);
+		const failed = await dispatchAdmin(
+			runtime,
+			{ type: "page_load", page: "/analytics" },
+			{
+				role: 50,
+				tokenScopes: ["admin"],
+			},
+		);
+		const failedText = JSON.stringify(failed.data);
+		expect(failedText).toContain("Connection failed");
+		expect(failedText).toContain("Retry connection");
+		expect(failedText).toContain("rejected this credential");
+		expect(failedText).not.toContain(privateKey);
 		expect(requests.filter(({ url }) => url.includes("analytics/"))).toHaveLength(0);
 		expect(await renderedTracking(runtime)).toBe("");
+		const revisited = await dispatchAdmin(
+			runtime,
+			{ type: "page_load", page: "/analytics" },
+			{
+				role: 50,
+				tokenScopes: ["admin"],
+			},
+		);
+		expect(JSON.stringify(revisited.data)).toContain("Retry connection");
+		expect(requests.filter(({ url }) => url.endsWith("/v1/read/site"))).toHaveLength(1);
+		const retried = await dispatchAdmin(
+			runtime,
+			{ type: "block_action", action_id: "revalidate", page: "/analytics" },
+			{
+				role: 50,
+				tokenScopes: ["admin"],
+			},
+		);
+		expect(JSON.stringify(retried.data)).toContain("Connected");
+		expect(requests.filter(({ url }) => url.endsWith("/v1/read/site"))).toHaveLength(2);
 	});
 
 	it("loads useful native blocks, emits explicit range and timezone, and never returns the private key", async () => {
@@ -1042,7 +1264,7 @@ describe("OpenAnalytics native admin page", () => {
 			{ type: "page_load", page: "/analytics" },
 			{ role: 50, tokenScopes: ["admin"] },
 		);
-		expect(JSON.stringify(page.data)).toContain("Validate the connection");
+		expect(JSON.stringify(page.data)).toContain("Retry connection");
 		expect(requests).toHaveLength(before);
 	});
 

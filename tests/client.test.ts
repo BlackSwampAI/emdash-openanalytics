@@ -111,6 +111,16 @@ describe("getSite", () => {
 		}
 	});
 
+	it("ignores implausibly large Retry-After values", async () => {
+		mockFetch(429, {}, { "retry-after": "999999999999999999999999" });
+		try {
+			await getSite(config());
+			throw new Error("expected getSite to fail");
+		} catch (error) {
+			expect(error).toMatchObject({ kind: "rate_limited", retryAfterSeconds: undefined });
+		}
+	});
+
 	it("rejects malformed JSON and malformed site contexts with safe errors", async () => {
 		mockFetch(200, "<html>oops</html>");
 		await expectKind(getSite(config()), "invalid_response");
@@ -123,6 +133,62 @@ describe("getSite", () => {
 			},
 		});
 		await expectKind(getSite(config()), "invalid_response");
+	});
+
+	it("rejects oversized upstream JSON responses", async () => {
+		const oversized = new Response(`{"padding":"${"x".repeat(1_048_576)}"}`, {
+			status: 200,
+			headers: { "content-type": "application/json" },
+		});
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => oversized),
+		);
+		await expectKind(getSite(config()), "invalid_response");
+	});
+
+	it("rejects an oversized declared response and cancels its body before reading", async () => {
+		let cancelled = false;
+		const body = new ReadableStream<Uint8Array>({
+			cancel() {
+				cancelled = true;
+			},
+		});
+		const response = new Response(body, {
+			status: 200,
+			headers: {
+				"content-type": "application/json",
+				"content-length": "1048577",
+			},
+		});
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => response),
+		);
+		await expectKind(getSite(config()), "invalid_response");
+		expect(cancelled).toBe(true);
+	});
+
+	it("cancels a streamed response as soon as its bytes exceed the cap", async () => {
+		let cancelled = false;
+		const body = new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.enqueue(new Uint8Array(1_048_577));
+			},
+			cancel() {
+				cancelled = true;
+			},
+		});
+		const response = new Response(body, {
+			status: 200,
+			headers: { "content-type": "application/json" },
+		});
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => response),
+		);
+		await expectKind(getSite(config()), "invalid_response");
+		expect(cancelled).toBe(true);
 	});
 
 	it.each([
